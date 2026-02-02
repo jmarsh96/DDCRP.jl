@@ -1,0 +1,240 @@
+# ============================================================================
+# PoissonClusterRates - Poisson with explicit cluster rates
+# ============================================================================
+#
+# Model:
+#   y_i | λ_k ~ Poisson(λ_k)    for observation i in cluster k
+#   λ_k ~ Gamma(λ_a, λ_b)       (explicit, sampled via conjugacy)
+#
+# Parameters: c (assignments), λ_k (cluster rates)
+# ============================================================================
+
+using Distributions, SpecialFunctions, Random
+
+# ============================================================================
+# Type Definition
+# ============================================================================
+
+"""
+    PoissonClusterRates <: PoissonModel
+
+Poisson model with explicit cluster-specific rates.
+Rates λ_k are maintained and updated via conjugate Gibbs sampling.
+
+Parameters:
+- c: Customer assignments
+- λ_k: Cluster rates (cluster-level)
+"""
+struct PoissonClusterRates <: PoissonModel end
+
+# ============================================================================
+# State Type
+# ============================================================================
+
+"""
+    PoissonClusterRatesState{T<:Real} <: AbstractMCMCState{T}
+
+State for PoissonClusterRates model.
+
+# Fields
+- `c::Vector{Int}`: Customer assignments (link representation)
+- `λ_dict::Dict{Vector{Int}, T}`: Table -> cluster rate mapping
+"""
+mutable struct PoissonClusterRatesState{T<:Real} <: AbstractMCMCState{T}
+    c::Vector{Int}
+    λ_dict::Dict{Vector{Int}, T}
+end
+
+# ============================================================================
+# Priors Type
+# ============================================================================
+
+"""
+    PoissonClusterRatesPriors{T<:Real} <: AbstractPriors
+
+Prior specification for PoissonClusterRates model.
+
+# Fields
+- `λ_a::T`: Gamma shape parameter for rate λ
+- `λ_b::T`: Gamma rate parameter for rate λ
+"""
+struct PoissonClusterRatesPriors{T<:Real} <: AbstractPriors
+    λ_a::T
+    λ_b::T
+end
+
+# ============================================================================
+# Trait Functions
+# ============================================================================
+
+has_latent_rates(::PoissonClusterRates) = false
+has_global_dispersion(::PoissonClusterRates) = false
+has_cluster_dispersion(::PoissonClusterRates) = false
+has_cluster_means(::PoissonClusterRates) = false
+has_cluster_rates(::PoissonClusterRates) = true
+is_marginalised(::PoissonClusterRates) = false
+
+# ============================================================================
+# Table Contribution
+# ============================================================================
+
+"""
+    table_contribution(model::PoissonClusterRates, table, state, y, priors)
+
+Compute log-contribution of a table with explicit cluster rate.
+"""
+function table_contribution(
+    ::PoissonClusterRates,
+    table::AbstractVector{Int},
+    state::PoissonClusterRatesState,
+    y::AbstractVector,
+    priors::PoissonClusterRatesPriors
+)
+    λ = state.λ_dict[sort(table)]
+    n_k = length(table)
+    S_k = sum(view(y, table))
+
+    # Poisson likelihood + Gamma prior on λ
+    log_lik = S_k * log(λ) - n_k * λ - sum(loggamma.(view(y, table) .+ 1))
+    log_prior = (priors.λ_a - 1) * log(λ) - priors.λ_b * λ
+
+    return log_lik + log_prior
+end
+
+# ============================================================================
+# Posterior
+# ============================================================================
+
+"""
+    posterior(model::PoissonClusterRates, y, state, priors, log_DDCRP)
+
+Compute full log-posterior for Poisson model with explicit rates.
+"""
+function posterior(
+    model::PoissonClusterRates,
+    y::AbstractVector,
+    state::PoissonClusterRatesState,
+    priors::PoissonClusterRatesPriors,
+    log_DDCRP::AbstractMatrix
+)
+    return sum(table_contribution(model, sort(table), state, y, priors)
+               for table in keys(state.λ_dict)) +
+           ddcrp_contribution(state.c, log_DDCRP)
+end
+
+# ============================================================================
+# Parameter Updates
+# ============================================================================
+
+"""
+    update_cluster_rates!(model::PoissonClusterRates, state, y, priors, tables)
+
+Update cluster rates using conjugate Gibbs sampling.
+Posterior: Gamma(λ_a + S_k, λ_b + n_k)
+"""
+function update_cluster_rates!(
+    ::PoissonClusterRates,
+    state::PoissonClusterRatesState,
+    y::AbstractVector,
+    priors::PoissonClusterRatesPriors,
+    tables::Vector{Vector{Int}}
+)
+    for table in tables
+        key = sort(table)
+        n_k = length(table)
+        S_k = sum(view(y, table))
+
+        # Conjugate posterior: Gamma(α + S_k, β + n_k)
+        α_post = priors.λ_a + S_k
+        β_post = priors.λ_b + n_k
+
+        state.λ_dict[key] = rand(Gamma(α_post, 1/β_post))
+    end
+end
+
+"""
+    update_params!(model::PoissonClusterRates, state, y, priors, tables; kwargs...)
+
+Update all model parameters.
+"""
+function update_params!(
+    model::PoissonClusterRates,
+    state::PoissonClusterRatesState,
+    y::AbstractVector,
+    priors::PoissonClusterRatesPriors,
+    tables::Vector{Vector{Int}};
+    kwargs...
+)
+    update_cluster_rates!(model, state, y, priors, tables)
+end
+
+# ============================================================================
+# State Initialization
+# ============================================================================
+
+"""
+    initialise_state(model::PoissonClusterRates, y, D, ddcrp_params, priors)
+
+Create initial MCMC state for the model.
+"""
+function initialise_state(
+    ::PoissonClusterRates,
+    y::AbstractVector,
+    D::AbstractMatrix,
+    ddcrp_params::DDCRPParams,
+    priors::PoissonClusterRatesPriors
+)
+    c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
+    tables = table_vector(c)
+
+    λ_dict = Dict{Vector{Int}, Float64}()
+    for table in tables
+        # Initialize at posterior mean
+        S_k = sum(view(y, table))
+        n_k = length(table)
+        λ_dict[sort(table)] = (priors.λ_a + S_k) / (priors.λ_b + n_k)
+    end
+
+    return PoissonClusterRatesState(c, λ_dict)
+end
+
+# ============================================================================
+# Sample Allocation and Extraction
+# ============================================================================
+
+"""
+    allocate_samples(model::PoissonClusterRates, n_samples, n)
+
+Allocate storage for MCMC samples.
+"""
+function allocate_samples(::PoissonClusterRates, n_samples::Int, n::Int)
+    MCMCSamples(
+        zeros(Int, n_samples, n),   # c
+        nothing,                    # λ (observation-level) - not used
+        nothing,                    # r - not used
+        zeros(n_samples, n),        # m - stores cluster rate per observation
+        zeros(n_samples)            # logpost
+    )
+end
+
+"""
+    extract_samples!(model::PoissonClusterRates, state, samples, iter)
+
+Extract current state into sample storage at iteration iter.
+"""
+function extract_samples!(
+    ::PoissonClusterRates,
+    state::PoissonClusterRatesState,
+    samples::MCMCSamples,
+    iter::Int
+)
+    samples.c[iter, :] = state.c
+    # Store λ per observation (each obs gets its cluster's rate)
+    if !isnothing(samples.m)
+        for (table, λ_val) in state.λ_dict
+            for i in table
+                samples.m[iter, i] = λ_val
+            end
+        end
+    end
+end
