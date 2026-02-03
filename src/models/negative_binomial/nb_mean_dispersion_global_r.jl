@@ -116,7 +116,7 @@ is_marginalised(::NBMeanDispersionGlobalR) = false
 # Note: negbin_logpdf is defined in core/state.jl
 
 """
-    table_contribution(model::NBMeanDispersionGlobalR, table, state, y, priors)
+    table_contribution(model::NBMeanDispersionGlobalR, table, state, data, priors)
 
 Compute log-contribution of a table with direct NegBin likelihood.
 """
@@ -124,9 +124,10 @@ function table_contribution(
     ::NBMeanDispersionGlobalR,
     table::AbstractVector{Int},
     state::NBMeanDispersionGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionGlobalRPriors
 )
+    y = observations(data)
     m = state.m_dict[sort(table)]
     r = state.r
 
@@ -144,13 +145,13 @@ end
 # ============================================================================
 
 """
-    posterior(model::NBMeanDispersionGlobalR, y, state, priors, log_DDCRP)
+    posterior(model::NBMeanDispersionGlobalR, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for direct NegBin model.
 """
 function posterior(
     model::NBMeanDispersionGlobalR,
-    y::AbstractVector,
+    data::CountData,
     state::NBMeanDispersionGlobalRState,
     priors::NBMeanDispersionGlobalRPriors,
     log_DDCRP::AbstractMatrix
@@ -158,7 +159,7 @@ function posterior(
     # Prior on r
     log_prior_r = logpdf(Gamma(priors.r_a, 1/priors.r_b), state.r)
 
-    return sum(table_contribution(model, sort(table), state, y, priors)
+    return sum(table_contribution(model, sort(table), state, data, priors)
                for table in keys(state.m_dict)) +
            ddcrp_contribution(state.c, log_DDCRP) +
            log_prior_r
@@ -169,24 +170,24 @@ end
 # ============================================================================
 
 """
-    update_m!(model::NBMeanDispersionGlobalR, state, y, priors; prop_sd=0.5)
+    update_m!(model::NBMeanDispersionGlobalR, state, data, priors; prop_sd=0.5)
 
 Update all cluster means using Metropolis-Hastings.
 """
 function update_m!(
     model::NBMeanDispersionGlobalR,
     state::NBMeanDispersionGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
     for table in keys(state.m_dict)
-        update_m_table!(model, table, state, y, priors; prop_sd=prop_sd)
+        update_m_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
 """
-    update_m_table!(model::NBMeanDispersionGlobalR, table, state, y, priors; prop_sd=0.5)
+    update_m_table!(model::NBMeanDispersionGlobalR, table, state, data, priors; prop_sd=0.5)
 
 Update cluster mean for a single table.
 """
@@ -194,7 +195,7 @@ function update_m_table!(
     model::NBMeanDispersionGlobalR,
     table::Vector{Int},
     state::NBMeanDispersionGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
@@ -205,8 +206,8 @@ function update_m_table!(
 
     state_can = NBMeanDispersionGlobalRState(state.c, m_can, state.r)
 
-    logpost_current = table_contribution(model, table, state, y, priors)
-    logpost_candidate = table_contribution(model, table, state_can, y, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -216,14 +217,14 @@ function update_m_table!(
 end
 
 """
-    update_r!(model::NBMeanDispersionGlobalR, state, y, priors, tables; prop_sd=0.5)
+    update_r!(model::NBMeanDispersionGlobalR, state, data, priors, tables; prop_sd=0.5)
 
 Update global dispersion parameter r using Metropolis-Hastings.
 """
 function update_r!(
     model::NBMeanDispersionGlobalR,
     state::NBMeanDispersionGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionGlobalRPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -233,9 +234,9 @@ function update_r!(
 
     state_can = NBMeanDispersionGlobalRState(state.c, state.m_dict, r_can)
 
-    logpost_current = sum(table_contribution(model, table, state, y, priors) for table in tables) +
+    logpost_current = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                       logpdf(Gamma(priors.r_a, 1/priors.r_b), state.r)
-    logpost_candidate = sum(table_contribution(model, table, state_can, y, priors) for table in tables) +
+    logpost_candidate = sum(table_contribution(model, table, state_can, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1/priors.r_b), r_can)
 
     log_accept_ratio = logpost_candidate - logpost_current
@@ -246,29 +247,32 @@ function update_r!(
 end
 
 """
-    update_params!(model::NBMeanDispersionGlobalR, state, y, priors, tables; kwargs...)
+    update_params!(model::NBMeanDispersionGlobalR, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (m_k and r).
 """
 function update_params!(
     model::NBMeanDispersionGlobalR,
     state::NBMeanDispersionGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionGlobalRPriors,
-    tables::Vector{Vector{Int}};
-    prop_sd_m::Float64 = 0.5,
-    prop_sd_r::Float64 = 0.5,
-    infer_m::Bool = true,
-    infer_r::Bool = true,
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    if infer_m
-        update_m!(model, state, y, priors; prop_sd=prop_sd_m)
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    if should_infer(opts, :m)
+        update_m!(model, state, data, priors; prop_sd=get_prop_sd(opts, :m))
     end
 
-    if infer_r
-        update_r!(model, state, y, priors, tables; prop_sd=prop_sd_r)
+    if should_infer(opts, :r)
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
+
+    # Note: Assignment updates would need RJMCMC implementation for this unmarginalised model
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -276,17 +280,18 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::NBMeanDispersionGlobalR, y, D, ddcrp_params, priors)
+    initialise_state(model::NBMeanDispersionGlobalR, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::NBMeanDispersionGlobalR,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::NBMeanDispersionGlobalRPriors
 )
+    y = observations(data)
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)
     m_dict = Dict{Vector{Int}, Float64}()

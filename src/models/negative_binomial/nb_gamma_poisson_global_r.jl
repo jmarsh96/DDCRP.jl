@@ -142,17 +142,18 @@ end
 # ============================================================================
 
 """
-    posterior(model::NBGammaPoissonGlobalR, y, state, priors, log_DDCRP)
+    posterior(model::NBGammaPoissonGlobalR, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for unmarginalised Gamma-Poisson NegBin model.
 """
 function posterior(
     model::NBGammaPoissonGlobalR,
-    y::AbstractVector,
+    data::CountData,
     state::NBGammaPoissonGlobalRState,
     priors::NBGammaPoissonGlobalRPriors,
     log_DDCRP::AbstractMatrix
 )
+    y = observations(data)
     return sum(table_contribution(model, sort(table), state, priors) for table in keys(state.m_dict)) +
            ddcrp_contribution(state.c, log_DDCRP) +
            likelihood_contribution(y, state.λ)
@@ -163,19 +164,20 @@ end
 # ============================================================================
 
 """
-    update_λ!(model::NBGammaPoissonGlobalR, i, y, state, priors, tables; prop_sd=0.5)
+    update_λ!(model::NBGammaPoissonGlobalR, i, data, state, priors, tables; prop_sd=0.5)
 
 Update latent rate λ[i] using Metropolis-Hastings with Normal proposal.
 """
 function update_λ!(
     model::NBGammaPoissonGlobalR,
     i::Int,
-    y::AbstractVector,
+    data::CountData,
     state::NBGammaPoissonGlobalRState,
     priors::NBGammaPoissonGlobalRPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
 )
+    y = observations(data)
     λ_can = copy(state.λ)
     λ_can[i] = rand(Normal(state.λ[i], prop_sd))
 
@@ -271,7 +273,7 @@ function update_m_table!(
 end
 
 """
-    update_params!(model::NBGammaPoissonGlobalR, state, y, priors, tables, log_DDCRP, opts)
+    update_params!(model::NBGammaPoissonGlobalR, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (λ, m, r) and customer assignments.
 Returns diagnostics information for assignment updates.
@@ -279,7 +281,7 @@ Returns diagnostics information for assignment updates.
 function update_params!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBGammaPoissonGlobalRPriors,
     tables::Vector{Vector{Int}},
     log_DDCRP::AbstractMatrix,
@@ -289,8 +291,8 @@ function update_params!(
 
     # Update λ
     if should_infer(opts, :λ)
-        for i in eachindex(y)
-            update_λ!(model, i, y, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
+        for i in 1:nobs(data)
+            update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
@@ -308,8 +310,8 @@ function update_params!(
     if should_infer(opts, :c)
         assignment_method = determine_assignment_method(model, opts)
         if assignment_method == :rjmcmc
-            for i in eachindex(y)
-                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
+            for i in 1:nobs(data)
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
                 push!(diagnostics, (move_type, i, j_star, accepted))
             end
         else
@@ -325,17 +327,18 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::NBGammaPoissonGlobalR, y, D, ddcrp_params, priors)
+    initialise_state(model::NBGammaPoissonGlobalR, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::NBGammaPoissonGlobalR,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::NBGammaPoissonGlobalRPriors
 )
+    y = observations(data)
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     λ = Float64.(y) .+ 1.0
     r = 1.0

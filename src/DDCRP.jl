@@ -22,6 +22,10 @@ export LikelihoodModel, AbstractMCMCState, BirthProposal
 export NegativeBinomialModel, PoissonModel, BinomialModel  # Abstract model families
 export AbstractPriors, AbstractMCMCSamples
 
+# Observed data types
+export AbstractObservedData, CountData, CountDataWithTrials
+export observations, distance_matrix, trials, has_trials, nobs, requires_trials
+
 # Birth proposals for RJMCMC
 export PriorProposal, NormalMeanProposal, MomentMatchedProposal, LogNormalProposal
 

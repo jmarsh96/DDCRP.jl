@@ -9,7 +9,7 @@ using StatsBase
 # ============================================================================
 
 """
-    update_c_gibbs!(model, i, state, y, priors, log_DDCRP)
+    update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
 
 Internal Gibbs sampling update for customer i's assignment.
 Called by model's update_params! when assignment_method is :gibbs.
@@ -21,7 +21,7 @@ function update_c_gibbs!(
     model::LikelihoodModel,
     i::Int,
     state::AbstractMCMCState,
-    y::AbstractVector,
+    data::AbstractObservedData,
     priors::AbstractPriors,
     log_DDCRP::AbstractMatrix
 )
@@ -31,7 +31,7 @@ function update_c_gibbs!(
     table_minus_i = table_vector_minus_i(i, state.c)
     current_table = table_minus_i[findfirst(x -> i in x, table_minus_i)]
 
-    current_table_contrib = table_contribution(model, current_table, state, y, priors)
+    current_table_contrib = table_contribution(model, current_table, state, data, priors)
 
     for customer in current_table
         log_probs[customer] = log_DDCRP[i, customer]
@@ -40,9 +40,9 @@ function update_c_gibbs!(
     remaining_tables = setdiff(table_minus_i, [current_table])
 
     for table in remaining_tables
-        prop_table_contrib = table_contribution(model, table, state, y, priors)
+        prop_table_contrib = table_contribution(model, table, state, data, priors)
         joined_table = vcat(current_table, table)
-        joined_table_contrib = table_contribution(model, joined_table, state, y, priors)
+        joined_table_contrib = table_contribution(model, joined_table, state, data, priors)
 
         term = joined_table_contrib - prop_table_contrib - current_table_contrib
 
@@ -63,7 +63,7 @@ function update_c_gibbs!(
     model::NBGammaPoissonGlobalRMarg,
     i::Int,
     state::NBGammaPoissonGlobalRMargState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBGammaPoissonGlobalRMargPriors,
     log_DDCRP::AbstractMatrix
 )
@@ -99,12 +99,12 @@ function update_c_gibbs!(
     return (:gibbs, state.c[i], true)
 end
 
-# PoissonClusterRatesMarg - passes y to table_contribution
+# PoissonClusterRatesMarg - passes data to table_contribution
 function update_c_gibbs!(
     model::PoissonClusterRatesMarg,
     i::Int,
     state::PoissonClusterRatesMargState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesMargPriors,
     log_DDCRP::AbstractMatrix
 )
@@ -114,7 +114,7 @@ function update_c_gibbs!(
     table_minus_i = table_vector_minus_i(i, state.c)
     current_table = table_minus_i[findfirst(x -> i in x, table_minus_i)]
 
-    current_table_contrib = table_contribution(model, current_table, state, y, priors)
+    current_table_contrib = table_contribution(model, current_table, state, data, priors)
 
     for customer in current_table
         log_probs[customer] = log_DDCRP[i, customer]
@@ -123,9 +123,9 @@ function update_c_gibbs!(
     remaining_tables = setdiff(table_minus_i, [current_table])
 
     for table in remaining_tables
-        prop_table_contrib = table_contribution(model, table, state, y, priors)
+        prop_table_contrib = table_contribution(model, table, state, data, priors)
         joined_table = vcat(current_table, table)
-        joined_table_contrib = table_contribution(model, joined_table, state, y, priors)
+        joined_table_contrib = table_contribution(model, joined_table, state, data, priors)
 
         term = joined_table_contrib - prop_table_contrib - current_table_contrib
 
@@ -140,13 +140,12 @@ function update_c_gibbs!(
     return (:gibbs, state.c[i], true)
 end
 
-# BinomialClusterProbMarg - requires N parameter for table_contribution
+# BinomialClusterProbMarg - requires CountDataWithTrials for table_contribution
 function update_c_gibbs!(
     model::BinomialClusterProbMarg,
     i::Int,
     state::BinomialClusterProbMargState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbMargPriors,
     log_DDCRP::AbstractMatrix
 )
@@ -156,7 +155,7 @@ function update_c_gibbs!(
     table_minus_i = table_vector_minus_i(i, state.c)
     current_table = table_minus_i[findfirst(x -> i in x, table_minus_i)]
 
-    current_table_contrib = table_contribution(model, current_table, state, y, N, priors)
+    current_table_contrib = table_contribution(model, current_table, state, data, priors)
 
     for customer in current_table
         log_probs[customer] = log_DDCRP[i, customer]
@@ -165,9 +164,9 @@ function update_c_gibbs!(
     remaining_tables = setdiff(table_minus_i, [current_table])
 
     for table in remaining_tables
-        prop_table_contrib = table_contribution(model, table, state, y, N, priors)
+        prop_table_contrib = table_contribution(model, table, state, data, priors)
         joined_table = vcat(current_table, table)
-        joined_table_contrib = table_contribution(model, joined_table, state, y, N, priors)
+        joined_table_contrib = table_contribution(model, joined_table, state, data, priors)
 
         term = joined_table_contrib - prop_table_contrib - current_table_contrib
 

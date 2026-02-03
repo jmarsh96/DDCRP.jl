@@ -32,10 +32,11 @@
     # ========================================================================
     @testset "BinomialClusterProbMarg" begin
         model = BinomialClusterProbMarg()
+        data = CountDataWithTrials(y, N, D)
         priors = BinomialClusterProbMargPriors(2.0, 2.0)
 
         @testset "State Initialization" begin
-            state = initialise_state(model, y, N, D, ddcrp_params, priors)
+            state = initialise_state(model, data, ddcrp_params, priors)
 
             @test state isa BinomialClusterProbMargState
             @test length(state.c) == n
@@ -45,7 +46,7 @@
             state = BinomialClusterProbMargState(copy(c_true))
 
             for table in tables_true
-                contrib = table_contribution(model, table, state, y, N, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
                 @test contrib < 0  # Log-probability
             end
@@ -55,23 +56,10 @@
             state = BinomialClusterProbMargState(copy(c_true))
             log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
 
-            post = posterior(model, y, N, state, priors, log_DDCRP)
+            post = posterior(model, data, state, priors, log_DDCRP)
             @test isfinite(post)
         end
 
-
-        @testset "Vector N Support" begin
-            # Test with observation-specific N values
-            N_vec = rand(5:15, n)
-            y_vec = [rand(Binomial(N_vec[i], p_obs[i])) for i in 1:n]
-
-            state = BinomialClusterProbMargState(copy(c_true))
-
-            for table in tables_true
-                contrib = table_contribution(model, table, state, y_vec, N_vec, priors)
-                @test isfinite(contrib)
-            end
-        end
     end
 
     # ========================================================================
@@ -80,9 +68,10 @@
     @testset "BinomialClusterProb" begin
         model = BinomialClusterProb()
         priors = BinomialClusterProbPriors(2.0, 2.0)
+        data = CountDataWithTrials(y, N, D)
 
         @testset "State Initialization" begin
-            state = initialise_state(model, y, N, D, ddcrp_params, priors)
+            state = initialise_state(model, data, ddcrp_params, priors)
 
             @test state isa BinomialClusterProbState
             @test length(state.c) == n
@@ -99,7 +88,7 @@
             state = BinomialClusterProbState(copy(c_true), p_dict)
 
             for table in keys(p_dict)
-                contrib = table_contribution(model, table, state, y, N, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end
@@ -113,7 +102,7 @@
             state = BinomialClusterProbState(copy(c_true), p_dict)
             log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
 
-            post = posterior(model, y, N, state, priors, log_DDCRP)
+            post = posterior(model, data, state, priors, log_DDCRP)
             @test isfinite(post)
         end
 
@@ -127,30 +116,12 @@
 
             p_before = Dict(k => v for (k, v) in state.p_dict)
 
-            update_cluster_probs!(model, state, y, N, priors, tables)
+            update_cluster_probs!(model, state, data, priors, tables)
 
             # p values should change (Gibbs update)
             @test all(0 < v < 1 for v in values(state.p_dict))
         end
 
-
-        @testset "Vector N Support" begin
-            # Test with observation-specific N values
-            N_vec = rand(5:15, n)
-            y_vec = [rand(Binomial(N_vec[i], p_obs[i])) for i in 1:n]
-
-            tables = table_vector(c_true)
-            p_dict = Dict{Vector{Int}, Float64}()
-            for (k, table) in enumerate(tables)
-                p_dict[sort(table)] = p_true[mod1(k, length(p_true))]
-            end
-            state = BinomialClusterProbState(copy(c_true), p_dict)
-
-            for table in keys(p_dict)
-                contrib = table_contribution(model, table, state, y_vec, N_vec, priors)
-                @test isfinite(contrib)
-            end
-        end
     end
 
     # ========================================================================

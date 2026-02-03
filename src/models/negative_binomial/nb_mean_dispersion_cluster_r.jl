@@ -116,7 +116,7 @@ is_marginalised(::NBMeanDispersionClusterR) = false
 # Note: negbin_logpdf is defined in core/state.jl
 
 """
-    table_contribution(model::NBMeanDispersionClusterR, table, state, y, priors)
+    table_contribution(model::NBMeanDispersionClusterR, table, state, data, priors)
 
 Compute log-contribution of a table with direct NegBin likelihood and cluster r.
 """
@@ -124,9 +124,10 @@ function table_contribution(
     ::NBMeanDispersionClusterR,
     table::AbstractVector{Int},
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors
 )
+    y = observations(data)
     key = sort(table)
     m = state.m_dict[key]
     r = state.r_dict[key]
@@ -146,18 +147,18 @@ end
 # ============================================================================
 
 """
-    posterior(model::NBMeanDispersionClusterR, y, state, priors, log_DDCRP)
+    posterior(model::NBMeanDispersionClusterR, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for direct NegBin model with cluster r.
 """
 function posterior(
     model::NBMeanDispersionClusterR,
-    y::AbstractVector,
+    data::CountData,
     state::NBMeanDispersionClusterRState,
     priors::NBMeanDispersionClusterRPriors,
     log_DDCRP::AbstractMatrix
 )
-    return sum(table_contribution(model, sort(table), state, y, priors)
+    return sum(table_contribution(model, sort(table), state, data, priors)
                for table in keys(state.m_dict)) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
@@ -167,24 +168,24 @@ end
 # ============================================================================
 
 """
-    update_m!(model::NBMeanDispersionClusterR, state, y, priors; prop_sd=0.5)
+    update_m!(model::NBMeanDispersionClusterR, state, data, priors; prop_sd=0.5)
 
 Update all cluster means using Metropolis-Hastings.
 """
 function update_m!(
     model::NBMeanDispersionClusterR,
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors;
     prop_sd::Float64 = 0.5
 )
     for table in keys(state.m_dict)
-        update_m_table!(model, table, state, y, priors; prop_sd=prop_sd)
+        update_m_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
 """
-    update_m_table!(model::NBMeanDispersionClusterR, table, state, y, priors; prop_sd=0.5)
+    update_m_table!(model::NBMeanDispersionClusterR, table, state, data, priors; prop_sd=0.5)
 
 Update cluster mean for a single table.
 """
@@ -192,7 +193,7 @@ function update_m_table!(
     model::NBMeanDispersionClusterR,
     table::Vector{Int},
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors;
     prop_sd::Float64 = 0.5
 )
@@ -203,8 +204,8 @@ function update_m_table!(
 
     state_can = NBMeanDispersionClusterRState(state.c, m_can, state.r_dict)
 
-    logpost_current = table_contribution(model, table, state, y, priors)
-    logpost_candidate = table_contribution(model, table, state_can, y, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -214,25 +215,25 @@ function update_m_table!(
 end
 
 """
-    update_r!(model::NBMeanDispersionClusterR, state, y, priors, tables; prop_sd=0.5)
+    update_r!(model::NBMeanDispersionClusterR, state, data, priors, tables; prop_sd=0.5)
 
 Update all cluster dispersion parameters using Metropolis-Hastings.
 """
 function update_r!(
     model::NBMeanDispersionClusterR,
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
 )
     for table in tables
-        update_r_table!(model, table, state, y, priors; prop_sd=prop_sd)
+        update_r_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
 """
-    update_r_table!(model::NBMeanDispersionClusterR, table, state, y, priors; prop_sd=0.5)
+    update_r_table!(model::NBMeanDispersionClusterR, table, state, data, priors; prop_sd=0.5)
 
 Update cluster dispersion for a single table.
 """
@@ -240,7 +241,7 @@ function update_r_table!(
     model::NBMeanDispersionClusterR,
     table::Vector{Int},
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors;
     prop_sd::Float64 = 0.5
 )
@@ -252,8 +253,8 @@ function update_r_table!(
     r_dict_can[key] = r_can
     state_can = NBMeanDispersionClusterRState(state.c, state.m_dict, r_dict_can)
 
-    logpost_current = table_contribution(model, table, state, y, priors)
-    logpost_candidate = table_contribution(model, table, state_can, y, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -263,29 +264,32 @@ function update_r_table!(
 end
 
 """
-    update_params!(model::NBMeanDispersionClusterR, state, y, priors, tables; kwargs...)
+    update_params!(model::NBMeanDispersionClusterR, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (m_k and r_k).
 """
 function update_params!(
     model::NBMeanDispersionClusterR,
     state::NBMeanDispersionClusterRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBMeanDispersionClusterRPriors,
-    tables::Vector{Vector{Int}};
-    prop_sd_m::Float64 = 0.5,
-    prop_sd_r::Float64 = 0.5,
-    infer_m::Bool = true,
-    infer_r::Bool = true,
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    if infer_m
-        update_m!(model, state, y, priors; prop_sd=prop_sd_m)
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    if should_infer(opts, :m)
+        update_m!(model, state, data, priors; prop_sd=get_prop_sd(opts, :m))
     end
 
-    if infer_r
-        update_r!(model, state, y, priors, tables; prop_sd=prop_sd_r)
+    if should_infer(opts, :r)
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
+
+    # Note: Assignment updates would need RJMCMC implementation for this unmarginalised model
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -293,17 +297,18 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::NBMeanDispersionClusterR, y, D, ddcrp_params, priors)
+    initialise_state(model::NBMeanDispersionClusterR, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::NBMeanDispersionClusterR,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::NBMeanDispersionClusterRPriors
 )
+    y = observations(data)
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)
     m_dict = Dict{Vector{Int}, Float64}()

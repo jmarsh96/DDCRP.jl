@@ -184,6 +184,81 @@ Marginalised models use Gibbs sampling for customer assignments.
 is_marginalised(::LikelihoodModel) = false
 
 # ============================================================================
+# Observed Data Types
+# ============================================================================
+
+"""
+    AbstractObservedData
+
+Abstract supertype for observed data containers in the DDCRP framework.
+Encapsulates response data (y), distance matrix (D), and optional trials data.
+"""
+abstract type AbstractObservedData end
+
+"""
+    CountData{Ty, Td} <: AbstractObservedData
+
+Observed count data for Poisson and Negative Binomial models.
+
+# Fields
+- `y::Ty`: Observed counts (AbstractVector)
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct CountData{Ty<:AbstractVector, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    D::Td
+end
+
+"""
+    CountDataWithTrials{Ty, Tn, Td} <: AbstractObservedData
+
+Observed count data with number of trials for Binomial models.
+
+# Fields
+- `y::Ty`: Observed successes (AbstractVector)
+- `N::Tn`: Number of trials (scalar Int or AbstractVector{Int})
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct CountDataWithTrials{Ty<:AbstractVector, Tn<:Union{Int, <:AbstractVector{Int}}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    N::Tn
+    D::Td
+end
+
+# ============================================================================
+# Observed Data Accessor Functions
+# ============================================================================
+
+"""Return the observations vector."""
+observations(data::AbstractObservedData) = data.y
+
+"""Return the distance matrix."""
+distance_matrix(data::AbstractObservedData) = data.D
+
+"""Return the number of trials (only for CountDataWithTrials)."""
+trials(data::CountDataWithTrials) = data.N
+
+"""Check if data has trials information."""
+has_trials(::CountData) = false
+has_trials(::CountDataWithTrials) = true
+
+"""Number of observations."""
+nobs(data::AbstractObservedData) = length(data.y)
+
+# ============================================================================
+# Model Data Requirement Traits
+# ============================================================================
+
+"""
+    requires_trials(model::LikelihoodModel) -> Bool
+
+Returns true if the model requires data with trials/exposure (N or P).
+"""
+requires_trials(::LikelihoodModel) = false
+requires_trials(::BinomialModel) = true
+# Note: PoissonPopulationRates also requires trials (exposure P) - defined in model file
+
+# ============================================================================
 # Legacy Strategy Types - REMOVED
 # ============================================================================
 # Legacy InferenceStrategy types have been removed.

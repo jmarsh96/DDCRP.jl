@@ -19,14 +19,13 @@ using Random, StatsBase
 # ============================================================================
 
 """
-    mcmc(model, y, D, ddcrp_params, priors; opts) -> MCMCSamples
+    mcmc(model, data, ddcrp_params, priors; opts) -> MCMCSamples
 
 Main MCMC entry point. Dispatches based on model type.
 
 # Arguments
 - `model::LikelihoodModel`: The likelihood model (determines parameter structure)
-- `y::Vector`: Observed data
-- `D::Matrix`: Distance matrix
+- `data::AbstractObservedData`: Observed data container (CountData or CountDataWithTrials)
 - `ddcrp_params::DDCRPParams`: DDCRP hyperparameters
 - `priors::AbstractPriors`: Prior specification
 
@@ -39,13 +38,21 @@ Main MCMC entry point. Dispatches based on model type.
 """
 function mcmc(
     model::LikelihoodModel,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::AbstractObservedData,
     ddcrp_params::DDCRPParams,
     priors::AbstractPriors;
     opts::MCMCOptions = MCMCOptions()
 )
-    n = length(y)
+    # Validate data matches model requirements
+    if requires_trials(model) && !has_trials(data)
+        throw(ArgumentError(
+            "Model $(typeof(model)) requires data with trials (N). " *
+            "Use CountDataWithTrials(y, N, D) instead of CountData(y, D)."
+        ))
+    end
+
+    n = nobs(data)
+    D = distance_matrix(data)
 
     # Precompute DDCRP matrix
     log_DDCRP = precompute_log_ddcrp(
@@ -56,7 +63,7 @@ function mcmc(
     )
 
     # Initialize state (dispatches on model type)
-    state = initialise_state(model, y, D, ddcrp_params, priors)
+    state = initialise_state(model, data, ddcrp_params, priors)
 
     # Allocate sample storage (dispatches on model type)
     samples = allocate_samples(model, opts.n_samples, n)
@@ -67,7 +74,7 @@ function mcmc(
 
     # Store initial state
     extract_samples!(model, state, samples, 1)
-    samples.logpost[1] = posterior(model, y, state, priors, log_DDCRP)
+    samples.logpost[1] = posterior(model, data, state, priors, log_DDCRP)
 
     # Main MCMC loop
     for iter in 2:opts.n_samples
@@ -75,7 +82,7 @@ function mcmc(
 
         # Update model parameters and customer assignments (dispatches on model type)
         # Each model's update_params! handles both parameter updates and assignment updates
-        result = update_params!(model, state, y, priors, tables, log_DDCRP, opts)
+        result = update_params!(model, state, data, priors, tables, log_DDCRP, opts)
 
         # Record diagnostics if returned
         # Diagnostics format: (move_type, i, j_star, accepted)
@@ -90,7 +97,7 @@ function mcmc(
 
         # Store samples
         extract_samples!(model, state, samples, iter)
-        samples.logpost[iter] = posterior(model, y, state, priors, log_DDCRP)
+        samples.logpost[iter] = posterior(model, data, state, priors, log_DDCRP)
 
         # Progress
         if opts.verbose && (iter % 100 == 0 || iter == 1)
@@ -105,9 +112,3 @@ function mcmc(
 
     return samples
 end
-
-# ============================================================================
-# Legacy compatibility code REMOVED
-# ============================================================================
-# Backwards compatibility for NamedTuple opts and InferenceStrategy has been removed.
-# Use MCMCOptions directly.

@@ -139,7 +139,7 @@ end
 # ============================================================================
 
 """
-    update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
+    update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
 
 Internal RJMCMC update for customer i's assignment.
 Called by model's update_params! when assignment_method is :rjmcmc.
@@ -150,7 +150,7 @@ function update_c_rjmcmc!(
     model::NBGammaPoissonGlobalR,
     i::Int,
     state::NBGammaPoissonGlobalRState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBGammaPoissonGlobalRPriors,
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
@@ -186,8 +186,8 @@ function update_c_rjmcmc!(
         lpr = -log_q_forward
 
         state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP) + lpr
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -212,8 +212,8 @@ function update_c_rjmcmc!(
         delete!(m_can, table_target)
 
         state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP) + lpr
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -231,8 +231,8 @@ function update_c_rjmcmc!(
         if table_old_target == table_new_target
             state_can = NBGammaPoissonGlobalRState(c_can, state.λ, state.m_dict, state.r)
 
-            log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                    posterior(model, y, state, priors, log_DDCRP)
+            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                    posterior(model, data, state, priors, log_DDCRP)
 
             if log(rand()) < log_α
                 state.c[i] = j_star
@@ -257,8 +257,8 @@ function update_c_rjmcmc!(
         delete!(m_can, table_new_target)
 
         state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP) + lpr
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -275,11 +275,12 @@ function update_c_rjmcmc!(
     model::PoissonClusterRates,
     i::Int,
     state::PoissonClusterRatesState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesPriors,
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
+    y = observations(data)
     n = length(state.c)
     j_old = state.c[i]
 
@@ -308,8 +309,8 @@ function update_c_rjmcmc!(
         delete!(λ_can, table_Si)
 
         state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -329,8 +330,8 @@ function update_c_rjmcmc!(
         delete!(λ_can, table_target)
 
         state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -347,8 +348,8 @@ function update_c_rjmcmc!(
 
         if table_old_target == table_new_target
             state_can = PoissonClusterRatesState(c_can, state.λ_dict)
-            log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                    posterior(model, y, state, priors, log_DDCRP)
+            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                    posterior(model, data, state, priors, log_DDCRP)
 
             if log(rand()) < log_α
                 state.c[i] = j_star
@@ -366,8 +367,8 @@ function update_c_rjmcmc!(
         delete!(λ_can, table_new_target)
 
         state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -384,11 +385,12 @@ function update_c_rjmcmc!(
     model::BinomialClusterProb,
     i::Int,
     state::BinomialClusterProbState,
-    y::AbstractVector,
+    data::CountDataWithTrials,
     priors::BinomialClusterProbPriors,
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
+    y = observations(data)
     n = length(state.c)
     j_old = state.c[i]
 
@@ -417,8 +419,8 @@ function update_c_rjmcmc!(
         delete!(p_can, table_Si)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -438,8 +440,8 @@ function update_c_rjmcmc!(
         delete!(p_can, table_target)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -456,8 +458,8 @@ function update_c_rjmcmc!(
 
         if table_old_target == table_new_target
             state_can = BinomialClusterProbState(c_can, state.p_dict)
-            log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                    posterior(model, y, state, priors, log_DDCRP)
+            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                    posterior(model, data, state, priors, log_DDCRP)
 
             if log(rand()) < log_α
                 state.c[i] = j_star
@@ -475,8 +477,8 @@ function update_c_rjmcmc!(
         delete!(p_can, table_new_target)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
-                posterior(model, y, state, priors, log_DDCRP)
+        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
+                posterior(model, data, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star

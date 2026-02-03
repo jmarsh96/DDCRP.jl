@@ -95,7 +95,7 @@ is_marginalised(::PoissonClusterRatesMarg) = true
 # ============================================================================
 
 """
-    table_contribution(model::PoissonClusterRatesMarg, table, state, y, priors)
+    table_contribution(model::PoissonClusterRatesMarg, table, state, data, priors)
 
 Compute log-contribution of a table with marginalised cluster rate.
 Uses Gamma-Poisson conjugacy for closed-form marginal.
@@ -104,9 +104,10 @@ function table_contribution(
     ::PoissonClusterRatesMarg,
     table::AbstractVector{Int},
     state::PoissonClusterRatesMargState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesMargPriors
 )
+    y = observations(data)
     n_k = length(table)
     S_k = sum(view(y, table))
 
@@ -124,19 +125,19 @@ end
 # ============================================================================
 
 """
-    posterior(model::PoissonClusterRatesMarg, y, state, priors, log_DDCRP)
+    posterior(model::PoissonClusterRatesMarg, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for marginalised Poisson model.
 """
 function posterior(
     model::PoissonClusterRatesMarg,
-    y::AbstractVector,
+    data::CountData,
     state::PoissonClusterRatesMargState,
     priors::PoissonClusterRatesMargPriors,
     log_DDCRP::AbstractMatrix
 )
     tables = table_vector(state.c)
-    return sum(table_contribution(model, table, state, y, priors) for table in tables) +
+    return sum(table_contribution(model, table, state, data, priors) for table in tables) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
 
@@ -145,7 +146,7 @@ end
 # ============================================================================
 
 """
-    update_params!(model::PoissonClusterRatesMarg, state, y, priors, tables, log_DDCRP, opts)
+    update_params!(model::PoissonClusterRatesMarg, state, data, priors, tables, log_DDCRP, opts)
 
 Update customer assignments. No other parameters to update - rates are marginalised out.
 Returns diagnostics information for assignment updates.
@@ -153,7 +154,7 @@ Returns diagnostics information for assignment updates.
 function update_params!(
     model::PoissonClusterRatesMarg,
     state::PoissonClusterRatesMargState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesMargPriors,
     tables::Vector{Vector{Int}},
     log_DDCRP::AbstractMatrix,
@@ -165,8 +166,8 @@ function update_params!(
 
     # Update customer assignments (this is a marginalised model, so uses Gibbs)
     if should_infer(opts, :c)
-        for i in eachindex(y)
-            move_type, j_star, accepted = update_c_gibbs!(model, i, state, y, priors, log_DDCRP)
+        for i in 1:nobs(data)
+            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
             push!(diagnostics, (move_type, i, j_star, accepted))
         end
     end
@@ -179,17 +180,17 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::PoissonClusterRatesMarg, y, D, ddcrp_params, priors)
+    initialise_state(model::PoissonClusterRatesMarg, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::PoissonClusterRatesMarg,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::PoissonClusterRatesMargPriors
 )
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     return PoissonClusterRatesMargState(c)
 end

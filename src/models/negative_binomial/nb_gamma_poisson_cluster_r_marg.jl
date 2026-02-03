@@ -140,17 +140,18 @@ end
 # ============================================================================
 
 """
-    posterior(model::NBGammaPoissonClusterRMarg, y, state, priors, log_DDCRP)
+    posterior(model::NBGammaPoissonClusterRMarg, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for Gamma-Poisson NegBin model with cluster r.
 """
 function posterior(
     model::NBGammaPoissonClusterRMarg,
-    y::AbstractVector,
+    data::CountData,
     state::NBGammaPoissonClusterRMargState,
     priors::NBGammaPoissonClusterRMargPriors,
     log_DDCRP::AbstractMatrix
 )
+    y = observations(data)
     tables = table_vector(state.c)
     return sum(table_contribution(model, table, state, priors) for table in tables) +
            ddcrp_contribution(state.c, log_DDCRP) +
@@ -162,19 +163,20 @@ end
 # ============================================================================
 
 """
-    update_λ!(model::NBGammaPoissonClusterRMarg, i, y, state, priors, tables; prop_sd=0.5)
+    update_λ!(model::NBGammaPoissonClusterRMarg, i, data, state, priors, tables; prop_sd=0.5)
 
 Update latent rate λ[i] using Metropolis-Hastings with Normal proposal.
 """
 function update_λ!(
     model::NBGammaPoissonClusterRMarg,
     i::Int,
-    y::AbstractVector,
+    data::CountData,
     state::NBGammaPoissonClusterRMargState,
     priors::NBGammaPoissonClusterRMargPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
 )
+    y = observations(data)
     λ_can = copy(state.λ)
     λ_can[i] = rand(Normal(state.λ[i], prop_sd))
 
@@ -243,31 +245,40 @@ function update_r_table!(
 end
 
 """
-    update_params!(model::NBGammaPoissonClusterRMarg, state, y, priors, tables; kwargs...)
+    update_params!(model::NBGammaPoissonClusterRMarg, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (λ and r_k).
 """
 function update_params!(
     model::NBGammaPoissonClusterRMarg,
     state::NBGammaPoissonClusterRMargState,
-    y::AbstractVector,
+    data::CountData,
     priors::NBGammaPoissonClusterRMargPriors,
-    tables::Vector{Vector{Int}};
-    prop_sd_λ::Float64 = 0.5,
-    prop_sd_r::Float64 = 0.5,
-    infer_λ::Bool = true,
-    infer_r::Bool = true,
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    if infer_λ
-        for i in eachindex(y)
-            update_λ!(model, i, y, state, priors, tables; prop_sd=prop_sd_λ)
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    if should_infer(opts, :λ)
+        for i in 1:nobs(data)
+            update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
-    if infer_r
-        update_r!(model, state, priors, tables; prop_sd=prop_sd_r)
+    if should_infer(opts, :r)
+        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
+
+    # Update customer assignments (this is a marginalised model for m, so uses Gibbs)
+    if should_infer(opts, :c)
+        for i in 1:nobs(data)
+            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
+            push!(diagnostics, (move_type, i, j_star, accepted))
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -275,17 +286,18 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::NBGammaPoissonClusterRMarg, y, D, ddcrp_params, priors)
+    initialise_state(model::NBGammaPoissonClusterRMarg, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::NBGammaPoissonClusterRMarg,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::NBGammaPoissonClusterRMargPriors
 )
+    y = observations(data)
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     λ = Float64.(y) .+ 1.0
     tables = table_vector(c)

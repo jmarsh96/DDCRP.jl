@@ -96,23 +96,20 @@ is_marginalised(::BinomialClusterProbMarg) = true
 # ============================================================================
 
 """
-    table_contribution(model::BinomialClusterProbMarg, table, state, y, N, priors)
+    table_contribution(model::BinomialClusterProbMarg, table, state, data, priors)
 
 Compute log-contribution of a table with marginalised cluster probability.
 Uses Beta-Binomial conjugacy for closed-form marginal.
-
-# Arguments
-- `y`: Vector of successes
-- `N`: Number of trials (scalar or vector)
 """
 function table_contribution(
     ::BinomialClusterProbMarg,
     table::AbstractVector{Int},
     state::BinomialClusterProbMargState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbMargPriors
 )
+    y = observations(data)
+    N = trials(data)
     n_k = length(table)
     y_table = view(y, table)
 
@@ -136,20 +133,19 @@ end
 # ============================================================================
 
 """
-    posterior(model::BinomialClusterProbMarg, y, N, state, priors, log_DDCRP)
+    posterior(model::BinomialClusterProbMarg, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for marginalised Binomial model.
 """
 function posterior(
     model::BinomialClusterProbMarg,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     state::BinomialClusterProbMargState,
     priors::BinomialClusterProbMargPriors,
     log_DDCRP::AbstractMatrix
 )
     tables = table_vector(state.c)
-    return sum(table_contribution(model, table, state, y, N, priors) for table in tables) +
+    return sum(table_contribution(model, table, state, data, priors) for table in tables) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
 
@@ -158,21 +154,32 @@ end
 # ============================================================================
 
 """
-    update_params!(model::BinomialClusterProbMarg, state, y, N, priors, tables; kwargs...)
+    update_params!(model::BinomialClusterProbMarg, state, data, priors, tables, log_DDCRP, opts)
 
-No parameters to update - probabilities are marginalised out.
+Update customer assignments. No other parameters to update - probabilities are marginalised out.
 """
 function update_params!(
-    ::BinomialClusterProbMarg,
+    model::BinomialClusterProbMarg,
     state::BinomialClusterProbMargState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbMargPriors,
-    tables::Vector{Vector{Int}};
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    # No-op: probabilities are marginalised out
-    return nothing
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    # No parameter updates - probabilities are marginalised out
+
+    # Update customer assignments (this is a marginalised model, so uses Gibbs)
+    if should_infer(opts, :c)
+        for i in 1:nobs(data)
+            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
+            push!(diagnostics, (move_type, i, j_star, accepted))
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -180,18 +187,17 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::BinomialClusterProbMarg, y, N, D, ddcrp_params, priors)
+    initialise_state(model::BinomialClusterProbMarg, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::BinomialClusterProbMarg,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
-    D::AbstractMatrix,
+    data::CountDataWithTrials,
     ddcrp_params::DDCRPParams,
     priors::BinomialClusterProbMargPriors
 )
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     return BinomialClusterProbMargState(c)
 end

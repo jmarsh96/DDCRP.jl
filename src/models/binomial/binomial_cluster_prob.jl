@@ -102,22 +102,19 @@ is_marginalised(::BinomialClusterProb) = false
 # Note: logbinomial is defined in core/state.jl
 
 """
-    table_contribution(model::BinomialClusterProb, table, state, y, N, priors)
+    table_contribution(model::BinomialClusterProb, table, state, data, priors)
 
 Compute log-contribution of a table with explicit cluster probability.
-
-# Arguments
-- `y`: Vector of successes
-- `N`: Number of trials (scalar or vector)
 """
 function table_contribution(
     ::BinomialClusterProb,
     table::AbstractVector{Int},
     state::BinomialClusterProbState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbPriors
 )
+    y = observations(data)
+    N = trials(data)
     p = state.p_dict[sort(table)]
     n_k = length(table)
     y_table = view(y, table)
@@ -139,19 +136,18 @@ end
 # ============================================================================
 
 """
-    posterior(model::BinomialClusterProb, y, N, state, priors, log_DDCRP)
+    posterior(model::BinomialClusterProb, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for Binomial model with explicit probabilities.
 """
 function posterior(
     model::BinomialClusterProb,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     state::BinomialClusterProbState,
     priors::BinomialClusterProbPriors,
     log_DDCRP::AbstractMatrix
 )
-    return sum(table_contribution(model, sort(table), state, y, N, priors)
+    return sum(table_contribution(model, sort(table), state, data, priors)
                for table in keys(state.p_dict)) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
@@ -161,7 +157,7 @@ end
 # ============================================================================
 
 """
-    update_cluster_probs!(model::BinomialClusterProb, state, y, N, priors, tables)
+    update_cluster_probs!(model::BinomialClusterProb, state, data, priors, tables)
 
 Update cluster probabilities using conjugate Gibbs sampling.
 Posterior: Beta(p_a + S_k, p_b + F_k)
@@ -169,11 +165,12 @@ Posterior: Beta(p_a + S_k, p_b + F_k)
 function update_cluster_probs!(
     ::BinomialClusterProb,
     state::BinomialClusterProbState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbPriors,
     tables::Vector{Vector{Int}}
 )
+    y = observations(data)
+    N = trials(data)
     for table in tables
         key = sort(table)
         n_k = length(table)
@@ -192,20 +189,26 @@ function update_cluster_probs!(
 end
 
 """
-    update_params!(model::BinomialClusterProb, state, y, N, priors, tables; kwargs...)
+    update_params!(model::BinomialClusterProb, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters.
 """
 function update_params!(
     model::BinomialClusterProb,
     state::BinomialClusterProbState,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
+    data::CountDataWithTrials,
     priors::BinomialClusterProbPriors,
-    tables::Vector{Vector{Int}};
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    update_cluster_probs!(model, state, y, N, priors, tables)
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    update_cluster_probs!(model, state, data, priors, tables)
+
+    # Note: Assignment updates would need RJMCMC implementation for this unmarginalised model
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -213,18 +216,17 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::BinomialClusterProb, y, N, D, ddcrp_params, priors)
+    initialise_state(model::BinomialClusterProb, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::BinomialClusterProb,
-    y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
-    D::AbstractMatrix,
+    data::CountDataWithTrials,
     ddcrp_params::DDCRPParams,
     priors::BinomialClusterProbPriors
 )
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)
 

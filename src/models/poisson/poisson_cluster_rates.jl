@@ -99,7 +99,7 @@ is_marginalised(::PoissonClusterRates) = false
 # ============================================================================
 
 """
-    table_contribution(model::PoissonClusterRates, table, state, y, priors)
+    table_contribution(model::PoissonClusterRates, table, state, data, priors)
 
 Compute log-contribution of a table with explicit cluster rate.
 """
@@ -107,9 +107,10 @@ function table_contribution(
     ::PoissonClusterRates,
     table::AbstractVector{Int},
     state::PoissonClusterRatesState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesPriors
 )
+    y = observations(data)
     λ = state.λ_dict[sort(table)]
     n_k = length(table)
     S_k = sum(view(y, table))
@@ -126,18 +127,18 @@ end
 # ============================================================================
 
 """
-    posterior(model::PoissonClusterRates, y, state, priors, log_DDCRP)
+    posterior(model::PoissonClusterRates, data, state, priors, log_DDCRP)
 
 Compute full log-posterior for Poisson model with explicit rates.
 """
 function posterior(
     model::PoissonClusterRates,
-    y::AbstractVector,
+    data::CountData,
     state::PoissonClusterRatesState,
     priors::PoissonClusterRatesPriors,
     log_DDCRP::AbstractMatrix
 )
-    return sum(table_contribution(model, sort(table), state, y, priors)
+    return sum(table_contribution(model, sort(table), state, data, priors)
                for table in keys(state.λ_dict)) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
@@ -147,7 +148,7 @@ end
 # ============================================================================
 
 """
-    update_cluster_rates!(model::PoissonClusterRates, state, y, priors, tables)
+    update_cluster_rates!(model::PoissonClusterRates, state, data, priors, tables)
 
 Update cluster rates using conjugate Gibbs sampling.
 Posterior: Gamma(λ_a + S_k, λ_b + n_k)
@@ -155,10 +156,11 @@ Posterior: Gamma(λ_a + S_k, λ_b + n_k)
 function update_cluster_rates!(
     ::PoissonClusterRates,
     state::PoissonClusterRatesState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesPriors,
     tables::Vector{Vector{Int}}
 )
+    y = observations(data)
     for table in tables
         key = sort(table)
         n_k = length(table)
@@ -173,7 +175,7 @@ function update_cluster_rates!(
 end
 
 """
-    update_params!(model::PoissonClusterRates, state, y, priors, tables, log_DDCRP, opts)
+    update_params!(model::PoissonClusterRates, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (cluster rates) and customer assignments.
 Returns diagnostics information for assignment updates.
@@ -181,7 +183,7 @@ Returns diagnostics information for assignment updates.
 function update_params!(
     model::PoissonClusterRates,
     state::PoissonClusterRatesState,
-    y::AbstractVector,
+    data::CountData,
     priors::PoissonClusterRatesPriors,
     tables::Vector{Vector{Int}},
     log_DDCRP::AbstractMatrix,
@@ -190,14 +192,14 @@ function update_params!(
     diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
 
     # Update cluster rates (always inferred via conjugacy)
-    update_cluster_rates!(model, state, y, priors, tables)
+    update_cluster_rates!(model, state, data, priors, tables)
 
     # Update customer assignments (this is an unmarginalised model, so uses RJMCMC)
     if should_infer(opts, :c)
         assignment_method = determine_assignment_method(model, opts)
         if assignment_method == :rjmcmc
-            for i in eachindex(y)
-                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
+            for i in 1:nobs(data)
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
                 push!(diagnostics, (move_type, i, j_star, accepted))
             end
         else
@@ -213,17 +215,18 @@ end
 # ============================================================================
 
 """
-    initialise_state(model::PoissonClusterRates, y, D, ddcrp_params, priors)
+    initialise_state(model::PoissonClusterRates, data, ddcrp_params, priors)
 
 Create initial MCMC state for the model.
 """
 function initialise_state(
     ::PoissonClusterRates,
-    y::AbstractVector,
-    D::AbstractMatrix,
+    data::CountData,
     ddcrp_params::DDCRPParams,
     priors::PoissonClusterRatesPriors
 )
+    y = observations(data)
+    D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)
 
