@@ -77,6 +77,28 @@ struct NBMeanDispersionClusterRPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    NBMeanDispersionClusterRSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for NBMeanDispersionClusterR model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `r::Matrix{T}`: Cluster dispersion per observation (n_samples x n_obs)
+- `m::Matrix{T}`: Cluster means per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct NBMeanDispersionClusterRSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    r::Matrix{T}
+    m::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -304,10 +326,9 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::NBMeanDispersionClusterR, n_samples::Int, n::Int)
-    MCMCSamples(
+    NBMeanDispersionClusterRSamples(
         zeros(Int, n_samples, n),   # c
-        zeros(n_samples, n),        # λ - repurposed for r per observation
-        nothing,                    # r (global) - not used
+        zeros(n_samples, n),        # r (per observation)
         zeros(n_samples, n),        # m (per observation)
         zeros(n_samples)            # logpost
     )
@@ -321,17 +342,15 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::NBMeanDispersionClusterR,
     state::NBMeanDispersionClusterRState,
-    samples::MCMCSamples,
+    samples::NBMeanDispersionClusterRSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c
     samples.m[iter, :] = m_dict_to_samples(1:length(state.c), state.m_dict)
-    # Store r per observation in the λ field
-    if !isnothing(samples.λ)
-        for (table, r_val) in state.r_dict
-            for i in table
-                samples.λ[iter, i] = r_val
-            end
+    # Store r per observation
+    for (table, r_val) in state.r_dict
+        for i in table
+            samples.r[iter, i] = r_val
         end
     end
 end

@@ -62,6 +62,24 @@ struct BinomialClusterProbMargPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    BinomialClusterProbMargSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for BinomialClusterProbMarg model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct BinomialClusterProbMargSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -188,11 +206,8 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::BinomialClusterProbMarg, n_samples::Int, n::Int)
-    MCMCSamples(
+    BinomialClusterProbMargSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ - not used
-        nothing,                    # r - not used
-        nothing,                    # m - probs marginalised
         zeros(n_samples)            # logpost
     )
 end
@@ -205,7 +220,7 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::BinomialClusterProbMarg,
     state::BinomialClusterProbMargState,
-    samples::MCMCSamples,
+    samples::BinomialClusterProbMargSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c

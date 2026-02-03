@@ -22,27 +22,24 @@ export LikelihoodModel, AbstractMCMCState, BirthProposal
 export NegativeBinomialModel, PoissonModel, BinomialModel  # Abstract model families
 export AbstractPriors, AbstractMCMCSamples
 
-# Assignment proposal types (new)
-export AssignmentProposal, GibbsProposal, MetropolisProposal, RJMCMCProposal
-
 # Birth proposals for RJMCMC
 export PriorProposal, NormalMeanProposal, MomentMatchedProposal, LogNormalProposal
 
 # Negative Binomial model variants
-export NBGammaPoissonGlobalRMarg, NBGammaPoissonGlobalRMargState, NBGammaPoissonGlobalRMargPriors
-export NBGammaPoissonGlobalR, NBGammaPoissonGlobalRState, NBGammaPoissonGlobalRPriors
-export NBGammaPoissonClusterRMarg, NBGammaPoissonClusterRMargState, NBGammaPoissonClusterRMargPriors
-export NBMeanDispersionGlobalR, NBMeanDispersionGlobalRState, NBMeanDispersionGlobalRPriors
-export NBMeanDispersionClusterR, NBMeanDispersionClusterRState, NBMeanDispersionClusterRPriors
+export NBGammaPoissonGlobalRMarg, NBGammaPoissonGlobalRMargState, NBGammaPoissonGlobalRMargPriors, NBGammaPoissonGlobalRMargSamples
+export NBGammaPoissonGlobalR, NBGammaPoissonGlobalRState, NBGammaPoissonGlobalRPriors, NBGammaPoissonGlobalRSamples
+export NBGammaPoissonClusterRMarg, NBGammaPoissonClusterRMargState, NBGammaPoissonClusterRMargPriors, NBGammaPoissonClusterRMargSamples
+export NBMeanDispersionGlobalR, NBMeanDispersionGlobalRState, NBMeanDispersionGlobalRPriors, NBMeanDispersionGlobalRSamples
+export NBMeanDispersionClusterR, NBMeanDispersionClusterRState, NBMeanDispersionClusterRPriors, NBMeanDispersionClusterRSamples
 
 # Poisson model variants
-export PoissonClusterRates, PoissonClusterRatesState, PoissonClusterRatesPriors
-export PoissonClusterRatesMarg, PoissonClusterRatesMargState, PoissonClusterRatesMargPriors
-export PoissonPopulationRates, PoissonPopulationRatesState, PoissonPopulationRatesPriors
+export PoissonClusterRates, PoissonClusterRatesState, PoissonClusterRatesPriors, PoissonClusterRatesSamples
+export PoissonClusterRatesMarg, PoissonClusterRatesMargState, PoissonClusterRatesMargPriors, PoissonClusterRatesMargSamples
+export PoissonPopulationRates, PoissonPopulationRatesState, PoissonPopulationRatesPriors, PoissonPopulationRatesSamples
 
 # Binomial model variants
-export BinomialClusterProb, BinomialClusterProbState, BinomialClusterProbPriors
-export BinomialClusterProbMarg, BinomialClusterProbMargState, BinomialClusterProbMargPriors
+export BinomialClusterProb, BinomialClusterProbState, BinomialClusterProbPriors, BinomialClusterProbSamples
+export BinomialClusterProbMarg, BinomialClusterProbMargState, BinomialClusterProbMargPriors, BinomialClusterProbMargSamples
 
 # DDCRP parameters
 export DDCRPParams
@@ -50,10 +47,11 @@ export DDCRPParams
 # MCMC
 export MCMCOptions, MCMCSamples, mcmc
 export MCMCDiagnostics, MCMCSummary
+export should_infer, get_prop_sd, build_birth_proposal, determine_assignment_method
 
 # Interface methods
 export table_contribution, posterior
-export update_λ!, update_r!, update_m!, update_c!
+export update_λ!, update_r!, update_m!
 export update_params!, update_cluster_rates!, update_cluster_probs!
 export sample_proposal, proposal_logpdf
 export initialise_state, extract_samples!, allocate_samples
@@ -61,7 +59,7 @@ export initialise_state, extract_samples!, allocate_samples
 # Trait functions
 export has_latent_rates, has_global_dispersion, has_cluster_dispersion
 export has_cluster_means, has_cluster_rates, has_cluster_probs
-export is_marginalised, default_proposal, validate_proposal
+export is_marginalised
 
 # Diagnostics
 export acceptance_rates, pairwise_acceptance_rates
@@ -78,7 +76,11 @@ export simulate_ddcrp
 export get_cluster_labels, c_to_z
 
 # State utilities
-export m_dict_to_samples, likelihood_contribution
+export m_dict_to_samples
+# Note: likelihood_contribution now in models/negative_binomial/nb_utils.jl
+# Note: negbin_logpdf now in models/negative_binomial/nb_utils.jl
+# Note: logbinomial now in models/binomial/binomial_utils.jl
+export likelihood_contribution, negbin_logpdf, logbinomial
 
 # Simulation utilities
 export simulate_m, simulate_λ
@@ -96,10 +98,6 @@ export compute_fixed_dim_means, compute_weighted_means, resample_posterior_means
 # Proposal utilities
 export fit_inverse_gamma_moments, compute_proposal_σ, compute_lognormal_σ
 
-# Legacy exports (backward compatibility)
-export InferenceStrategy, MarginalisedStrategy, UnmarginalisedStrategy
-export Marginalised, Unmarginalised, RJMCMC_Strategy
-
 # ============================================================================
 # Include files in dependency order
 # ============================================================================
@@ -109,6 +107,7 @@ include("core/types.jl")
 include("core/priors.jl")
 include("core/ddcrp.jl")
 include("core/state.jl")
+include("core/options.jl")
 
 # Inference machinery - proposals and diagnostics (depends on core)
 include("inference/proposals.jl")
@@ -116,6 +115,7 @@ include("inference/diagnostics.jl")
 
 # Model implementations - Negative Binomial variants
 # (must be loaded before samplers that have specialized methods for them)
+include("models/negative_binomial/nb_utils.jl")
 include("models/negative_binomial/nb_gamma_poisson_global_r_marg.jl")
 include("models/negative_binomial/nb_gamma_poisson_global_r.jl")
 include("models/negative_binomial/nb_gamma_poisson_cluster_r_marg.jl")
@@ -128,6 +128,7 @@ include("models/poisson/poisson_cluster_rates_marg.jl")
 include("models/poisson/poisson_population_rates.jl")
 
 # Model implementations - Binomial variants
+include("models/binomial/binomial_utils.jl")
 include("models/binomial/binomial_cluster_prob.jl")
 include("models/binomial/binomial_cluster_prob_marg.jl")
 

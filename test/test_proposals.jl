@@ -158,19 +158,22 @@
         end
     end
 
-    @testset "RJMCMCProposal Construction" begin
-        # Test RJMCMCProposal with different birth proposals
-        rj_prior = RJMCMCProposal(PriorProposal(), :none)
-        @test rj_prior.birth_proposal isa PriorProposal
-        @test rj_prior.fixed_dim_mode == :none
+    @testset "MCMCOptions with Birth Proposals" begin
+        # Test MCMCOptions with different birth proposal settings
+        opts_prior = MCMCOptions(assignment_method=:rjmcmc, birth_proposal=:prior, fixed_dim_mode=:none)
+        @test opts_prior.assignment_method == :rjmcmc
+        @test opts_prior.birth_proposal == :prior
+        @test opts_prior.fixed_dim_mode == :none
 
-        rj_normal = RJMCMCProposal(NormalMeanProposal(), :weighted_mean)
-        @test rj_normal.birth_proposal isa NormalMeanProposal
-        @test rj_normal.fixed_dim_mode == :weighted_mean
+        opts_normal = MCMCOptions(assignment_method=:rjmcmc, birth_proposal=:normal, fixed_dim_mode=:weighted_mean)
+        @test opts_normal.assignment_method == :rjmcmc
+        @test opts_normal.birth_proposal == :normal
+        @test opts_normal.fixed_dim_mode == :weighted_mean
 
-        rj_moment = RJMCMCProposal(MomentMatchedProposal(5), :resample_posterior)
-        @test rj_moment.birth_proposal isa MomentMatchedProposal
-        @test rj_moment.fixed_dim_mode == :resample_posterior
+        opts_moment = MCMCOptions(assignment_method=:rjmcmc, birth_proposal=:moment_matched, fixed_dim_mode=:resample_posterior)
+        @test opts_moment.assignment_method == :rjmcmc
+        @test opts_moment.birth_proposal == :moment_matched
+        @test opts_moment.fixed_dim_mode == :resample_posterior
     end
 
 end

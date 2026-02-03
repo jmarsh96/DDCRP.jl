@@ -86,24 +86,6 @@
             @test all(v > 0 for v in values(state.λ_dict))
         end
 
-        @testset "RJMCMC Customer Assignment" begin
-            tables = table_vector(c_true)
-            λ_dict = Dict{Vector{Int}, Float64}()
-            for (k, table) in enumerate(tables)
-                λ_dict[sort(table)] = λ_true[mod1(k, length(λ_true))]
-            end
-            state = PoissonClusterRatesState(copy(c_true), λ_dict)
-            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
-            proposal = RJMCMCProposal(PriorProposal(), :none)
-
-            for _ in 1:5
-                for i in 1:n
-                    move_type, j_star, accepted = update_c!(proposal, model, i, state, y, priors, log_DDCRP)
-                    @test move_type in [:birth, :death, :fixed]
-                    @test 1 <= j_star <= n
-                end
-            end
-        end
     end
 
     # ========================================================================
@@ -138,17 +120,6 @@
             @test isfinite(post)
         end
 
-        @testset "Gibbs Customer Assignment" begin
-            state = PoissonClusterRatesMargState(copy(c_true))
-            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
-            proposal = GibbsProposal()
-
-            move_type, j_star, accepted = update_c!(proposal, model, 1, state, y, priors, log_DDCRP)
-
-            @test move_type == :gibbs
-            @test 1 <= j_star <= n
-            @test accepted == true
-        end
     end
 
     # ========================================================================

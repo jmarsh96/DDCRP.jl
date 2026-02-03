@@ -119,11 +119,11 @@ function point_estimate_clustering(c_samples::Matrix{Int}; method::Symbol=:MAP)
 end
 
 """
-    posterior_summary(samples::MCMCSamples; burnin::Int=0)
+    posterior_summary(samples::AbstractMCMCSamples; burnin::Int=0)
 
 Compute summary statistics for posterior samples.
 """
-function posterior_summary(samples::MCMCSamples; burnin::Int=0)
+function posterior_summary(samples::AbstractMCMCSamples; burnin::Int=0)
     start_idx = burnin + 1
     c_post = samples.c[start_idx:end, :]
 

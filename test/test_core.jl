@@ -148,11 +148,6 @@
         @test BinomialClusterProbMarg <: BinomialModel
         @test BinomialModel <: LikelihoodModel
 
-        # Test assignment proposal types
-        @test GibbsProposal <: AssignmentProposal
-        @test MetropolisProposal <: AssignmentProposal
-        @test RJMCMCProposal <: AssignmentProposal
-
         # Test birth proposal types
         @test PriorProposal <: BirthProposal
         @test NormalMeanProposal <: BirthProposal
@@ -295,29 +290,28 @@
         @test ll ≈ expected
     end
 
-    @testset "Default Proposals" begin
-        # Marginalised models should default to GibbsProposal
-        @test default_proposal(NBGammaPoissonGlobalRMarg()) isa GibbsProposal
-        @test default_proposal(PoissonClusterRatesMarg()) isa GibbsProposal
-        @test default_proposal(BinomialClusterProbMarg()) isa GibbsProposal
+    @testset "MCMCOptions" begin
+        # Test default options
+        opts = MCMCOptions()
+        @test opts.n_samples == 10000
+        @test opts.assignment_method == :auto
+        @test opts.verbose == false
+        @test opts.track_diagnostics == true
 
-        # Unmarginalised models should default to RJMCMCProposal
-        @test default_proposal(NBGammaPoissonGlobalR()) isa RJMCMCProposal
-        @test default_proposal(PoissonClusterRates()) isa RJMCMCProposal
-        @test default_proposal(BinomialClusterProb()) isa RJMCMCProposal
-    end
+        # Test with assignment_method
+        opts_gibbs = MCMCOptions(assignment_method=:gibbs)
+        @test opts_gibbs.assignment_method == :gibbs
 
-    @testset "Proposal Validation" begin
-        # GibbsProposal only valid for marginalised models
-        @test_throws ArgumentError validate_proposal(NBGammaPoissonGlobalR(), GibbsProposal())
-        @test_throws ArgumentError validate_proposal(PoissonClusterRates(), GibbsProposal())
+        opts_rjmcmc = MCMCOptions(assignment_method=:rjmcmc, birth_proposal=:prior, fixed_dim_mode=:none)
+        @test opts_rjmcmc.assignment_method == :rjmcmc
+        @test opts_rjmcmc.birth_proposal == :prior
+        @test opts_rjmcmc.fixed_dim_mode == :none
 
-        # Should not throw for marginalised models
-        validate_proposal(NBGammaPoissonGlobalRMarg(), GibbsProposal())
-        validate_proposal(PoissonClusterRatesMarg(), GibbsProposal())
-
-        # RJMCMCProposal should work for unmarginalised
-        validate_proposal(NBGammaPoissonGlobalR(), RJMCMCProposal(PriorProposal(), :none))
+        # Test infer_params dictionary
+        opts_custom = MCMCOptions(infer_params=Dict(:λ => true, :r => false, :c => true))
+        @test should_infer(opts_custom, :λ) == true
+        @test should_infer(opts_custom, :r) == false
+        @test should_infer(opts_custom, :c) == true
     end
 
 end

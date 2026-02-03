@@ -74,6 +74,28 @@ struct NBGammaPoissonGlobalRMargPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    NBGammaPoissonGlobalRMargSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for NBGammaPoissonGlobalRMarg model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `λ::Matrix{T}`: Latent rates (n_samples x n_obs)
+- `r::Vector{T}`: Global dispersion parameter (n_samples)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct NBGammaPoissonGlobalRMargSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    λ::Matrix{T}
+    r::Vector{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -203,33 +225,43 @@ function update_r!(
 end
 
 """
-    update_params!(model::NBGammaPoissonGlobalRMarg, state, y, priors, tables; kwargs...)
+    update_params!(model::NBGammaPoissonGlobalRMarg, state, y, priors, tables, log_DDCRP, opts)
 
-Update all model parameters (λ and r).
+Update all model parameters (λ, r) and customer assignments.
+Returns diagnostics information for assignment updates.
 """
 function update_params!(
     model::NBGammaPoissonGlobalRMarg,
     state::NBGammaPoissonGlobalRMargState,
     y::AbstractVector,
     priors::NBGammaPoissonGlobalRMargPriors,
-    tables::Vector{Vector{Int}};
-    prop_sd_λ::Float64 = 0.5,
-    prop_sd_r::Float64 = 0.5,
-    infer_λ::Bool = true,
-    infer_r::Bool = true,
-    kwargs...  # Absorb unused kwargs (prop_sd_m, infer_m)
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
     # Update λ
-    if infer_λ
+    if should_infer(opts, :λ)
         for i in eachindex(y)
-            update_λ!(model, i, y, state, priors, tables; prop_sd=prop_sd_λ)
+            update_λ!(model, i, y, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
     # Update r
-    if infer_r
-        update_r!(model, state, priors, tables; prop_sd=prop_sd_r)
+    if should_infer(opts, :r)
+        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
+
+    # Update customer assignments (this is a marginalised model, so uses Gibbs)
+    if should_infer(opts, :c)
+        for i in eachindex(y)
+            move_type, j_star, accepted = update_c_gibbs!(model, i, state, y, priors, log_DDCRP)
+            push!(diagnostics, (move_type, i, j_star, accepted))
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -264,11 +296,10 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::NBGammaPoissonGlobalRMarg, n_samples::Int, n::Int)
-    MCMCSamples(
+    NBGammaPoissonGlobalRMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples),           # r
-        nothing,                    # m (marginalised)
         zeros(n_samples)            # logpost
     )
 end
@@ -281,7 +312,7 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::NBGammaPoissonGlobalRMarg,
     state::NBGammaPoissonGlobalRMargState,
-    samples::MCMCSamples,
+    samples::NBGammaPoissonGlobalRMargSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c

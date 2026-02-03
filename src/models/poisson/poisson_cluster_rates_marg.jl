@@ -62,6 +62,24 @@ struct PoissonClusterRatesMargPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    PoissonClusterRatesMargSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for PoissonClusterRatesMarg model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct PoissonClusterRatesMargSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -127,20 +145,33 @@ end
 # ============================================================================
 
 """
-    update_params!(model::PoissonClusterRatesMarg, state, y, priors, tables; kwargs...)
+    update_params!(model::PoissonClusterRatesMarg, state, y, priors, tables, log_DDCRP, opts)
 
-No parameters to update - rates are marginalised out.
+Update customer assignments. No other parameters to update - rates are marginalised out.
+Returns diagnostics information for assignment updates.
 """
 function update_params!(
-    ::PoissonClusterRatesMarg,
+    model::PoissonClusterRatesMarg,
     state::PoissonClusterRatesMargState,
     y::AbstractVector,
     priors::PoissonClusterRatesMargPriors,
-    tables::Vector{Vector{Int}};
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
-    # No-op: rates are marginalised out
-    return nothing
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    # No parameter updates - rates are marginalised out
+
+    # Update customer assignments (this is a marginalised model, so uses Gibbs)
+    if should_infer(opts, :c)
+        for i in eachindex(y)
+            move_type, j_star, accepted = update_c_gibbs!(model, i, state, y, priors, log_DDCRP)
+            push!(diagnostics, (move_type, i, j_star, accepted))
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -173,11 +204,8 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::PoissonClusterRatesMarg, n_samples::Int, n::Int)
-    MCMCSamples(
+    PoissonClusterRatesMargSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ - not used
-        nothing,                    # r - not used
-        nothing,                    # m - rates marginalised
         zeros(n_samples)            # logpost
     )
 end
@@ -190,7 +218,7 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::PoissonClusterRatesMarg,
     state::PoissonClusterRatesMargState,
-    samples::MCMCSamples,
+    samples::PoissonClusterRatesMargSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c

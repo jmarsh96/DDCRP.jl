@@ -64,6 +64,26 @@ struct BinomialClusterProbPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    BinomialClusterProbSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for BinomialClusterProb model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `p::Matrix{T}`: Cluster probabilities per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct BinomialClusterProbSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    p::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -227,11 +247,9 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::BinomialClusterProb, n_samples::Int, n::Int)
-    MCMCSamples(
+    BinomialClusterProbSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ - not used
-        nothing,                    # r - not used
-        zeros(n_samples, n),        # m - stores cluster prob per observation
+        zeros(n_samples, n),        # p - stores cluster prob per observation
         zeros(n_samples)            # logpost
     )
 end
@@ -244,15 +262,13 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::BinomialClusterProb,
     state::BinomialClusterProbState,
-    samples::MCMCSamples,
+    samples::BinomialClusterProbSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c
-    if !isnothing(samples.m)
-        for (table, p_val) in state.p_dict
-            for i in table
-                samples.m[iter, i] = p_val
-            end
+    for (table, p_val) in state.p_dict
+        for i in table
+            samples.p[iter, i] = p_val
         end
     end
 end

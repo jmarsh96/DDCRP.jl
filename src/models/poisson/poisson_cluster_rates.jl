@@ -64,6 +64,26 @@ struct PoissonClusterRatesPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    PoissonClusterRatesSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for PoissonClusterRates model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `λ::Matrix{T}`: Cluster rates per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct PoissonClusterRatesSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    λ::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -153,19 +173,39 @@ function update_cluster_rates!(
 end
 
 """
-    update_params!(model::PoissonClusterRates, state, y, priors, tables; kwargs...)
+    update_params!(model::PoissonClusterRates, state, y, priors, tables, log_DDCRP, opts)
 
-Update all model parameters.
+Update all model parameters (cluster rates) and customer assignments.
+Returns diagnostics information for assignment updates.
 """
 function update_params!(
     model::PoissonClusterRates,
     state::PoissonClusterRatesState,
     y::AbstractVector,
     priors::PoissonClusterRatesPriors,
-    tables::Vector{Vector{Int}};
-    kwargs...
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
+    # Update cluster rates (always inferred via conjugacy)
     update_cluster_rates!(model, state, y, priors, tables)
+
+    # Update customer assignments (this is an unmarginalised model, so uses RJMCMC)
+    if should_infer(opts, :c)
+        assignment_method = determine_assignment_method(model, opts)
+        if assignment_method == :rjmcmc
+            for i in eachindex(y)
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
+                push!(diagnostics, (move_type, i, j_star, accepted))
+            end
+        else
+            error("PoissonClusterRates is unmarginalised and requires RJMCMC for assignment updates")
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -208,11 +248,9 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::PoissonClusterRates, n_samples::Int, n::Int)
-    MCMCSamples(
+    PoissonClusterRatesSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ (observation-level) - not used
-        nothing,                    # r - not used
-        zeros(n_samples, n),        # m - stores cluster rate per observation
+        zeros(n_samples, n),        # λ - stores cluster rate per observation
         zeros(n_samples)            # logpost
     )
 end
@@ -225,16 +263,14 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::PoissonClusterRates,
     state::PoissonClusterRatesState,
-    samples::MCMCSamples,
+    samples::PoissonClusterRatesSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c
     # Store λ per observation (each obs gets its cluster's rate)
-    if !isnothing(samples.m)
-        for (table, λ_val) in state.λ_dict
-            for i in table
-                samples.m[iter, i] = λ_val
-            end
+    for (table, λ_val) in state.λ_dict
+        for i in table
+            samples.λ[iter, i] = λ_val
         end
     end
 end

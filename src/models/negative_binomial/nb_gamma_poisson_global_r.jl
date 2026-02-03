@@ -76,6 +76,30 @@ struct NBGammaPoissonGlobalRPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    NBGammaPoissonGlobalRSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for NBGammaPoissonGlobalR model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `λ::Matrix{T}`: Latent rates (n_samples x n_obs)
+- `r::Vector{T}`: Global dispersion parameter (n_samples)
+- `m::Matrix{T}`: Cluster means per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct NBGammaPoissonGlobalRSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    λ::Matrix{T}
+    r::Vector{T}
+    m::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -247,39 +271,53 @@ function update_m_table!(
 end
 
 """
-    update_params!(model::NBGammaPoissonGlobalR, state, y, priors, tables; kwargs...)
+    update_params!(model::NBGammaPoissonGlobalR, state, y, priors, tables, log_DDCRP, opts)
 
-Update all model parameters (λ, m, and r).
+Update all model parameters (λ, m, r) and customer assignments.
+Returns diagnostics information for assignment updates.
 """
 function update_params!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
     y::AbstractVector,
     priors::NBGammaPoissonGlobalRPriors,
-    tables::Vector{Vector{Int}};
-    prop_sd_λ::Float64 = 0.5,
-    prop_sd_m::Float64 = 0.5,
-    prop_sd_r::Float64 = 0.5,
-    infer_λ::Bool = true,
-    infer_m::Bool = true,
-    infer_r::Bool = true
+    tables::Vector{Vector{Int}},
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
+    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
+
     # Update λ
-    if infer_λ
+    if should_infer(opts, :λ)
         for i in eachindex(y)
-            update_λ!(model, i, y, state, priors, tables; prop_sd=prop_sd_λ)
+            update_λ!(model, i, y, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
     # Update m
-    if infer_m
-        update_m!(model, state, priors; prop_sd=prop_sd_m)
+    if should_infer(opts, :m)
+        update_m!(model, state, priors; prop_sd=get_prop_sd(opts, :m))
     end
 
     # Update r
-    if infer_r
-        update_r!(model, state, priors, tables; prop_sd=prop_sd_r)
+    if should_infer(opts, :r)
+        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
+
+    # Update customer assignments (this is an unmarginalised model, so uses RJMCMC)
+    if should_infer(opts, :c)
+        assignment_method = determine_assignment_method(model, opts)
+        if assignment_method == :rjmcmc
+            for i in eachindex(y)
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
+                push!(diagnostics, (move_type, i, j_star, accepted))
+            end
+        else
+            error("NBGammaPoissonGlobalR is unmarginalised and requires RJMCMC for assignment updates")
+        end
+    end
+
+    return diagnostics
 end
 
 # ============================================================================
@@ -319,7 +357,7 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::NBGammaPoissonGlobalR, n_samples::Int, n::Int)
-    MCMCSamples(
+    NBGammaPoissonGlobalRSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples),           # r
@@ -336,7 +374,7 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
-    samples::MCMCSamples,
+    samples::NBGammaPoissonGlobalRSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c

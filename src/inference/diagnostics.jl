@@ -264,7 +264,7 @@ end
 
 Compute comprehensive summary of MCMC run.
 """
-function summarize_mcmc(samples::MCMCSamples, diag::MCMCDiagnostics)
+function summarize_mcmc(samples::AbstractMCMCSamples, diag::MCMCDiagnostics)
     n_clusters = calculate_n_clusters(samples.c)
 
     acc_rates = acceptance_rates(diag)

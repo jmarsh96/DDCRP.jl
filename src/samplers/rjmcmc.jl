@@ -135,30 +135,29 @@ function resample_posterior_means(S_i, λ, table_A, m_A, table_B, m_B, priors)
 end
 
 # ============================================================================
-# RJMCMC Customer Assignment Update - New Signature
+# Internal RJMCMC functions (called by model's update_params!)
 # ============================================================================
 
 """
-    update_c!(proposal::RJMCMCProposal, model, i, state, y, priors, log_DDCRP)
+    update_c_rjmcmc!(model, i, state, y, priors, log_DDCRP, opts)
 
-Update customer i's assignment using Reversible Jump MCMC.
-
-Move types:
-- Birth (K→K+1): S_i splits off to form new cluster
-- Death (K→K-1): S_i merges into existing cluster
-- Fixed dimension: transfer between clusters or internal rewiring
+Internal RJMCMC update for customer i's assignment.
+Called by model's update_params! when assignment_method is :rjmcmc.
 
 Returns (move_type::Symbol, j_star::Int, accepted::Bool)
 """
-function update_c!(
-    proposal::RJMCMCProposal,
+function update_c_rjmcmc!(
     model::NBGammaPoissonGlobalR,
     i::Int,
     state::NBGammaPoissonGlobalRState,
     y::AbstractVector,
     priors::NBGammaPoissonGlobalRPriors,
-    log_DDCRP::AbstractMatrix
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
+    birth_prop = build_birth_proposal(opts)
+    fixed_dim_mode = opts.fixed_dim_mode
+
     n = length(state.c)
     j_old = state.c[i]
 
@@ -167,7 +166,6 @@ function update_c!(
     m_old = state.m_dict[table_Si]
     table_l = setdiff(table_Si, S_i)
 
-    # Propose new link uniformly
     j_star = rand(1:n)
 
     j_old_in_Si = j_old in S_i
@@ -177,18 +175,14 @@ function update_c!(
     c_can = copy(state.c)
     c_can[i] = j_star
 
-    birth_prop = proposal.birth_proposal
-    fixed_dim_mode = proposal.fixed_dim_mode
-
     if !j_old_in_Si && j_star_in_Si
-        # BIRTH: S_i splits off to form new cluster
+        # BIRTH
         m_new, log_q_forward = sample_proposal(birth_prop, S_i, state.λ, priors)
 
         m_can[sort(S_i)] = m_new
         m_can[sort(table_l)] = state.m_dict[table_Si]
         delete!(m_can, table_Si)
 
-        # Hastings ratio: -log q(m_new | forward)
         lpr = -log_q_forward
 
         state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
@@ -204,13 +198,12 @@ function update_c!(
         return (:birth, j_star, false)
 
     elseif j_old_in_Si && !j_star_in_Si
-        # DEATH: S_i merges into another cluster
+        # DEATH
         table_target = find_table_for_customer(j_star, state.m_dict)
         m_target = state.m_dict[table_target]
 
         m_can[sort(vcat(table_Si, table_target))] = m_target
 
-        # Hastings ratio: +log q(m_old | reverse birth)
         m_old = state.m_dict[table_Si]
         log_q_reverse = proposal_logpdf(birth_prop, m_old, S_i, state.λ, priors)
         lpr = log_q_reverse
@@ -231,12 +224,11 @@ function update_c!(
         return (:death, j_star, false)
 
     else
-        # FIXED DIMENSION: both inside S_i or both outside
+        # FIXED DIMENSION
         table_old_target = find_table_for_customer(j_old, state.m_dict)
         table_new_target = find_table_for_customer(j_star, state.m_dict)
 
         if table_old_target == table_new_target
-            # Same cluster - internal rewiring only
             state_can = NBGammaPoissonGlobalRState(c_can, state.λ, state.m_dict, state.r)
 
             log_α = posterior(model, y, state_can, priors, log_DDCRP) -
@@ -249,11 +241,9 @@ function update_c!(
             return (:fixed, j_star, false)
         end
 
-        # Different clusters - S_i moves from table_old_target to table_new_target
         new_table_depleted = setdiff(table_old_target, S_i)
         new_table_augmented = sort(vcat(table_new_target, S_i))
 
-        # Compute new means based on fixed_dim_mode
         m_depleted, m_augmented, lpr = compute_fixed_dim_means(
             fixed_dim_mode, S_i, state.λ,
             table_old_target, state.m_dict[table_old_target],
@@ -280,18 +270,15 @@ function update_c!(
     end
 end
 
-# ============================================================================
-# RJMCMC for PoissonClusterRates
-# ============================================================================
-
-function update_c!(
-    proposal::RJMCMCProposal,
+# PoissonClusterRates internal RJMCMC
+function update_c_rjmcmc!(
     model::PoissonClusterRates,
     i::Int,
     state::PoissonClusterRatesState,
     y::AbstractVector,
     priors::PoissonClusterRatesPriors,
-    log_DDCRP::AbstractMatrix
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
     n = length(state.c)
     j_old = state.c[i]
@@ -311,7 +298,7 @@ function update_c!(
     c_can[i] = j_star
 
     if !j_old_in_Si && j_star_in_Si
-        # BIRTH: Sample new rate from posterior
+        # BIRTH
         S_k = sum(view(y, S_i))
         n_k = length(S_i)
         λ_new = rand(Gamma(priors.λ_a + S_k, 1/(priors.λ_b + n_k)))
@@ -333,7 +320,7 @@ function update_c!(
         return (:birth, j_star, false)
 
     elseif j_old_in_Si && !j_star_in_Si
-        # DEATH: Merge into target cluster
+        # DEATH
         table_target = find_table_for_customer(j_star, state.λ_dict)
         λ_target = state.λ_dict[table_target]
 
@@ -354,7 +341,7 @@ function update_c!(
         return (:death, j_star, false)
 
     else
-        # FIXED: Internal rewiring or cluster transfer
+        # FIXED DIMENSION
         table_old_target = find_table_for_customer(j_old, state.λ_dict)
         table_new_target = find_table_for_customer(j_star, state.λ_dict)
 
@@ -370,7 +357,6 @@ function update_c!(
             return (:fixed, j_star, false)
         end
 
-        # Transfer between clusters
         new_table_depleted = setdiff(table_old_target, S_i)
         new_table_augmented = sort(vcat(table_new_target, S_i))
 
@@ -393,19 +379,15 @@ function update_c!(
     end
 end
 
-# ============================================================================
-# RJMCMC for BinomialClusterProb
-# ============================================================================
-
-function update_c!(
-    proposal::RJMCMCProposal,
+# BinomialClusterProb internal RJMCMC
+function update_c_rjmcmc!(
     model::BinomialClusterProb,
     i::Int,
     state::BinomialClusterProbState,
     y::AbstractVector,
-    N::Union{Int, AbstractVector{Int}},
     priors::BinomialClusterProbPriors,
-    log_DDCRP::AbstractMatrix
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
 )
     n = length(state.c)
     j_old = state.c[i]
@@ -425,18 +407,18 @@ function update_c!(
     c_can[i] = j_star
 
     if !j_old_in_Si && j_star_in_Si
-        # BIRTH: Sample new probability from posterior
+        # BIRTH
         S_k = sum(view(y, S_i))
-        N_k = N isa Int ? N * length(S_i) : sum(view(N, S_i))
-        p_new = rand(Beta(priors.p_a + S_k, priors.p_b + N_k - S_k))
+        n_k = length(S_i)
+        p_new = rand(Beta(priors.p_a + S_k, priors.p_b + n_k - S_k))
 
         p_can[sort(S_i)] = p_new
         p_can[sort(table_l)] = state.p_dict[table_Si]
         delete!(p_can, table_Si)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, N, state_can, priors, log_DDCRP) -
-                posterior(model, y, N, state, priors, log_DDCRP)
+        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
+                posterior(model, y, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -447,7 +429,7 @@ function update_c!(
         return (:birth, j_star, false)
 
     elseif j_old_in_Si && !j_star_in_Si
-        # DEATH: Merge into target cluster
+        # DEATH
         table_target = find_table_for_customer(j_star, state.p_dict)
         p_target = state.p_dict[table_target]
 
@@ -456,8 +438,8 @@ function update_c!(
         delete!(p_can, table_target)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, N, state_can, priors, log_DDCRP) -
-                posterior(model, y, N, state, priors, log_DDCRP)
+        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
+                posterior(model, y, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -468,14 +450,14 @@ function update_c!(
         return (:death, j_star, false)
 
     else
-        # FIXED: Internal rewiring or cluster transfer
+        # FIXED DIMENSION
         table_old_target = find_table_for_customer(j_old, state.p_dict)
         table_new_target = find_table_for_customer(j_star, state.p_dict)
 
         if table_old_target == table_new_target
             state_can = BinomialClusterProbState(c_can, state.p_dict)
-            log_α = posterior(model, y, N, state_can, priors, log_DDCRP) -
-                    posterior(model, y, N, state, priors, log_DDCRP)
+            log_α = posterior(model, y, state_can, priors, log_DDCRP) -
+                    posterior(model, y, state, priors, log_DDCRP)
 
             if log(rand()) < log_α
                 state.c[i] = j_star
@@ -484,7 +466,6 @@ function update_c!(
             return (:fixed, j_star, false)
         end
 
-        # Transfer between clusters
         new_table_depleted = setdiff(table_old_target, S_i)
         new_table_augmented = sort(vcat(table_new_target, S_i))
 
@@ -494,8 +475,8 @@ function update_c!(
         delete!(p_can, table_new_target)
 
         state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, y, N, state_can, priors, log_DDCRP) -
-                posterior(model, y, N, state, priors, log_DDCRP)
+        log_α = posterior(model, y, state_can, priors, log_DDCRP) -
+                posterior(model, y, state, priors, log_DDCRP)
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -508,21 +489,7 @@ function update_c!(
 end
 
 # ============================================================================
-# Legacy compatibility - old signature with RJMCMC strategy
+# Legacy dispatch code REMOVED
 # ============================================================================
-
-function update_c!(
-    strategy::RJMCMC_Strategy,
-    model::LikelihoodModel,
-    i::Int,
-    state::AbstractMCMCState,
-    y::AbstractVector,
-    priors::AbstractPriors,
-    log_DDCRP::AbstractMatrix;
-    opts = nothing
-)
-    bp = isnothing(opts) ? PriorProposal() : get(opts, :birth_proposal, PriorProposal())
-    fdm = isnothing(opts) ? :none : get(opts, :fixed_dim_mode, :none)
-    proposal = RJMCMCProposal(bp, fdm)
-    return update_c!(proposal, model, i, state, y, priors, log_DDCRP)
-end
+# RJMCMCProposal and RJMCMC_Strategy types have been removed.
+# Use update_c_rjmcmc! directly or through model's update_params!

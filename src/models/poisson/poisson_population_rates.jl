@@ -71,6 +71,26 @@ struct PoissonPopulationRatesPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for PoissonPopulationRates model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `ρ::Matrix{T}`: Cluster rate multipliers per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    ρ::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -229,11 +249,9 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::PoissonPopulationRates, n_samples::Int, n::Int)
-    MCMCSamples(
+    PoissonPopulationRatesSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ - not used
-        nothing,                    # r - not used
-        zeros(n_samples, n),        # m - stores cluster ρ per observation
+        zeros(n_samples, n),        # ρ - stores cluster ρ per observation
         zeros(n_samples)            # logpost
     )
 end
@@ -246,15 +264,13 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::PoissonPopulationRates,
     state::PoissonPopulationRatesState,
-    samples::MCMCSamples,
+    samples::PoissonPopulationRatesSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c
-    if !isnothing(samples.m)
-        for (table, ρ_val) in state.ρ_dict
-            for i in table
-                samples.m[iter, i] = ρ_val
-            end
+    for (table, ρ_val) in state.ρ_dict
+        for i in table
+            samples.ρ[iter, i] = ρ_val
         end
     end
 end

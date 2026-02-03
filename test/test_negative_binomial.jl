@@ -78,17 +78,6 @@
             @test state.r > 0
         end
 
-        @testset "Gibbs Customer Assignment" begin
-            state = NBGammaPoissonGlobalRMargState(copy(c_true), copy(λ_true), 5.0)
-            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
-            proposal = GibbsProposal()
-
-            move_type, j_star, accepted = update_c!(proposal, model, 1, state, y, priors, log_DDCRP)
-
-            @test move_type == :gibbs
-            @test 1 <= j_star <= n
-            @test accepted == true
-        end
     end
 
     # ========================================================================
@@ -150,28 +139,6 @@
             @test all(v > 0 for v in values(state.m_dict))
         end
 
-        @testset "RJMCMC Customer Assignment" begin
-            tables = table_vector(c_true)
-            m_dict = Dict{Vector{Int}, Float64}()
-            for table in tables
-                m_dict[sort(table)] = mean(λ_true[table])
-            end
-            state = NBGammaPoissonGlobalRState(copy(c_true), copy(λ_true), m_dict, 5.0)
-            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
-            proposal = RJMCMCProposal(PriorProposal(), :none)
-
-            for _ in 1:10
-                for i in 1:n
-                    move_type, j_star, accepted = update_c!(proposal, model, i, state, y, priors, log_DDCRP)
-                    @test move_type in [:birth, :death, :fixed]
-                    @test 1 <= j_star <= n
-                    @test accepted isa Bool
-                end
-            end
-
-            @test all(1 <= state.c[i] <= n for i in 1:n)
-            @test all(v > 0 for v in values(state.m_dict))
-        end
     end
 
     # ========================================================================

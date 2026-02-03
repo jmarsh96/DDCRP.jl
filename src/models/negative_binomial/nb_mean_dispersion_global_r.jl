@@ -77,6 +77,28 @@ struct NBMeanDispersionGlobalRPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    NBMeanDispersionGlobalRSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for NBMeanDispersionGlobalR model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `r::Vector{T}`: Global dispersion parameter (n_samples)
+- `m::Matrix{T}`: Cluster means per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct NBMeanDispersionGlobalRSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    r::Vector{T}
+    m::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -286,9 +308,8 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::NBMeanDispersionGlobalR, n_samples::Int, n::Int)
-    MCMCSamples(
+    NBMeanDispersionGlobalRSamples(
         zeros(Int, n_samples, n),   # c
-        nothing,                    # λ (not used - no latent rates)
         zeros(n_samples),           # r
         zeros(n_samples, n),        # m (per observation)
         zeros(n_samples)            # logpost
@@ -303,7 +324,7 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::NBMeanDispersionGlobalR,
     state::NBMeanDispersionGlobalRState,
-    samples::MCMCSamples,
+    samples::NBMeanDispersionGlobalRSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c

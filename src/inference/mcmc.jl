@@ -1,67 +1,25 @@
 # ============================================================================
 # Generic MCMC Loop - New Architecture
-# Dispatches on model type with optional AssignmentProposal
+# Dispatches on model type with update_params! handling all updates
 # ============================================================================
 
 using Random, StatsBase
 
-"""
-    MCMCOptions
-
-Configuration for MCMC sampling.
-
-# Fields
-- `n_samples::Int`: Number of MCMC iterations (default: 10000)
-- `verbose::Bool`: Print progress (default: false)
-- `infer_λ::Bool`: Update latent rates (default: true)
-- `infer_r::Bool`: Update dispersion parameter (default: true)
-- `infer_m::Bool`: Update cluster means (default: true)
-- `infer_customer_assignments::Bool`: Update customer assignments (default: true)
-- `track_diagnostics::Bool`: Track acceptance rates (default: true)
-- `track_pairwise::Bool`: Track pairwise proposals (default: false)
-- `prop_sd_λ::Float64`: Proposal std for λ updates (default: 0.5)
-- `prop_sd_r::Float64`: Proposal std for r updates (default: 0.5)
-- `prop_sd_m::Float64`: Proposal std for m updates (default: 0.5)
-"""
-Base.@kwdef struct MCMCOptions
-    n_samples::Int = 10000
-    verbose::Bool = false
-
-    # Inference toggles
-    infer_λ::Bool = true
-    infer_r::Bool = true
-    infer_m::Bool = true
-    infer_customer_assignments::Bool = true
-
-    # Diagnostics
-    track_diagnostics::Bool = true
-    track_pairwise::Bool = false
-
-    # Proposal standard deviations
-    prop_sd_λ::Float64 = 0.5
-    prop_sd_r::Float64 = 0.5
-    prop_sd_m::Float64 = 0.5
-end
-
-# Convert to NamedTuple for backwards compatibility
-function Base.getindex(opts::MCMCOptions, key::Symbol)
-    return getfield(opts, key)
-end
-
-function Base.get(opts::MCMCOptions, key::Symbol, default)
-    if hasfield(MCMCOptions, key)
-        return getfield(opts, key)
-    else
-        return default
-    end
-end
+# MCMCOptions is defined in core/options.jl
 
 # ============================================================================
-# Generic MCMC Entry Point - New Signature
+# update_params! - Implemented by each model
+# ============================================================================
+# Each model implements its own update_params!(model, state, y, priors, tables, log_DDCRP, opts)
+# that handles both parameter updates and customer assignment updates based on opts.
+# No fallback is provided - all models must implement this interface.
+
+# ============================================================================
+# Generic MCMC Entry Point
 # ============================================================================
 
 """
-    mcmc(model, y, D, ddcrp_params, priors; proposal, opts) -> MCMCSamples
+    mcmc(model, y, D, ddcrp_params, priors; opts) -> MCMCSamples
 
 Main MCMC entry point. Dispatches based on model type.
 
@@ -73,8 +31,7 @@ Main MCMC entry point. Dispatches based on model type.
 - `priors::AbstractPriors`: Prior specification
 
 # Keyword Arguments
-- `proposal::AssignmentProposal`: How to update customer assignments (default: model-specific)
-- `opts::MCMCOptions`: MCMC configuration
+- `opts::MCMCOptions`: MCMC configuration (includes assignment_method, prop_sds, infer_params)
 
 # Returns
 - `MCMCSamples`: Posterior samples
@@ -86,12 +43,8 @@ function mcmc(
     D::AbstractMatrix,
     ddcrp_params::DDCRPParams,
     priors::AbstractPriors;
-    proposal::AssignmentProposal = default_proposal(model),
     opts::MCMCOptions = MCMCOptions()
 )
-    # Validate proposal is compatible with model
-    validate_proposal(model, proposal)
-
     n = length(y)
 
     # Precompute DDCRP matrix
@@ -120,26 +73,17 @@ function mcmc(
     for iter in 2:opts.n_samples
         tables = table_vector(state.c)
 
-        # Update model-specific parameters (dispatches on model type)
-        update_params!(model, state, y, priors, tables;
-                      prop_sd_λ=opts.prop_sd_λ,
-                      prop_sd_m=opts.prop_sd_m,
-                      prop_sd_r=opts.prop_sd_r,
-                      infer_λ=opts.infer_λ,
-                      infer_m=opts.infer_m,
-                      infer_r=opts.infer_r)
+        # Update model parameters and customer assignments (dispatches on model type)
+        # Each model's update_params! handles both parameter updates and assignment updates
+        result = update_params!(model, state, y, priors, tables, log_DDCRP, opts)
 
-        # Update customer assignments (dispatches on proposal and model)
-        if opts.infer_customer_assignments
-            for i in eachindex(y)
-                result = update_c!(proposal, model, i, state, y, priors, log_DDCRP)
-
-                if opts.track_diagnostics && !isnothing(diag)
-                    move_type, j_star, accepted = result
-                    record_move!(diag, move_type, accepted)
-                    if opts.track_pairwise
-                        record_pairwise!(diag, i, j_star, accepted)
-                    end
+        # Record diagnostics if returned
+        # Diagnostics format: (move_type, i, j_star, accepted)
+        if opts.track_diagnostics && !isnothing(diag) && !isnothing(result)
+            for (move_type, i, j_star, accepted) in result
+                record_move!(diag, move_type, accepted)
+                if opts.track_pairwise
+                    record_pairwise!(diag, i, j_star, accepted)
                 end
             end
         end
@@ -163,80 +107,7 @@ function mcmc(
 end
 
 # ============================================================================
-# Convenience method accepting NamedTuple opts
+# Legacy compatibility code REMOVED
 # ============================================================================
-
-function mcmc(
-    model::LikelihoodModel,
-    y::AbstractVector,
-    D::AbstractMatrix,
-    ddcrp_params::DDCRPParams,
-    priors::AbstractPriors,
-    opts::NamedTuple
-)
-    mcmc_opts = MCMCOptions(;
-        n_samples = get(opts, :n_samples, 10000),
-        verbose = get(opts, :verbose, false),
-        infer_λ = get(opts, :infer_lambda, get(opts, :infer_λ, true)),
-        infer_r = get(opts, :infer_r, true),
-        infer_m = get(opts, :infer_m, true),
-        infer_customer_assignments = get(opts, :infer_customer_assignments, true),
-        track_diagnostics = get(opts, :track_diagnostics, true),
-        track_pairwise = get(opts, :track_pairwise, false),
-    )
-
-    # Check for proposal in opts
-    proposal = if haskey(opts, :proposal)
-        opts.proposal
-    elseif haskey(opts, :birth_proposal)
-        # Legacy: convert birth_proposal to RJMCMCProposal
-        RJMCMCProposal(opts.birth_proposal, get(opts, :fixed_dim_mode, :none))
-    else
-        default_proposal(model)
-    end
-
-    return mcmc(model, y, D, ddcrp_params, priors; proposal=proposal, opts=mcmc_opts)
-end
-
-# ============================================================================
-# Backward Compatibility - Old Signature with Strategy
-# ============================================================================
-
-# Legacy InferenceStrategy types are defined in core/types.jl
-# (InferenceStrategy, MarginalisedStrategy, UnmarginalisedStrategy,
-#  Marginalised, Unmarginalised, RJMCMC_Strategy)
-
-# Keep old signature working during transition
-function mcmc(
-    model::LikelihoodModel,
-    strategy::InferenceStrategy,
-    y::AbstractVector,
-    D::AbstractMatrix,
-    ddcrp_params::DDCRPParams,
-    priors::AbstractPriors,
-    opts::MCMCOptions = MCMCOptions()
-)
-    @warn "mcmc(model, strategy, ...) is deprecated. Use mcmc(model, y, D, ...; proposal=...) instead." maxlog=1
-
-    # Convert old strategy to new proposal
-    proposal = strategy_to_proposal(strategy, opts)
-
-    return mcmc(model, y, D, ddcrp_params, priors; proposal=proposal, opts=opts)
-end
-
-"""
-    strategy_to_proposal(strategy, opts) -> AssignmentProposal
-
-Convert legacy strategy to new proposal type.
-"""
-strategy_to_proposal(::MarginalisedStrategy, opts) = GibbsProposal()
-strategy_to_proposal(::Unmarginalised, opts) = MetropolisProposal()
-function strategy_to_proposal(::RJMCMC_Strategy, opts)
-    bp = get(opts, :birth_proposal, PriorProposal())
-    fdm = get(opts, :fixed_dim_mode, :none)
-    return RJMCMCProposal(bp, fdm)
-end
-
-# Legacy trait functions for backward compatibility
-has_cluster_means(::MarginalisedStrategy) = false
-has_cluster_means(::UnmarginalisedStrategy) = true
+# Backwards compatibility for NamedTuple opts and InferenceStrategy has been removed.
+# Use MCMCOptions directly.

@@ -74,6 +74,28 @@ struct NBGammaPoissonClusterRMargPriors{T<:Real} <: AbstractPriors
 end
 
 # ============================================================================
+# Samples Type
+# ============================================================================
+
+"""
+    NBGammaPoissonClusterRMargSamples{T<:Real} <: AbstractMCMCSamples
+
+MCMC samples container for NBGammaPoissonClusterRMarg model.
+
+# Fields
+- `c::Matrix{Int}`: Customer assignments (n_samples x n_obs)
+- `λ::Matrix{T}`: Latent rates (n_samples x n_obs)
+- `r::Matrix{T}`: Cluster dispersion per observation (n_samples x n_obs)
+- `logpost::Vector{T}`: Log-posterior values (n_samples)
+"""
+struct NBGammaPoissonClusterRMargSamples{T<:Real} <: AbstractMCMCSamples
+    c::Matrix{Int}
+    λ::Matrix{T}
+    r::Matrix{T}
+    logpost::Vector{T}
+end
+
+# ============================================================================
 # Trait Functions
 # ============================================================================
 
@@ -284,11 +306,10 @@ end
 Allocate storage for MCMC samples.
 """
 function allocate_samples(::NBGammaPoissonClusterRMarg, n_samples::Int, n::Int)
-    MCMCSamples(
+    NBGammaPoissonClusterRMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples, n),        # r (per observation, stores cluster r)
-        nothing,                    # m (marginalised)
         zeros(n_samples)            # logpost
     )
 end
@@ -301,17 +322,15 @@ Extract current state into sample storage at iteration iter.
 function extract_samples!(
     ::NBGammaPoissonClusterRMarg,
     state::NBGammaPoissonClusterRMargState,
-    samples::MCMCSamples,
+    samples::NBGammaPoissonClusterRMargSamples,
     iter::Int
 )
     samples.c[iter, :] = state.c
     samples.λ[iter, :] = state.λ
     # Store r per observation (each obs gets its cluster's r)
-    if !isnothing(samples.r)
-        for (table, r_val) in state.r_dict
-            for i in table
-                samples.r[iter, i] = r_val
-            end
+    for (table, r_val) in state.r_dict
+        for i in table
+            samples.r[iter, i] = r_val
         end
     end
 end

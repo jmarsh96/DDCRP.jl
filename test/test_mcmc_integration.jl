@@ -18,16 +18,14 @@
         opts = MCMCOptions(
             n_samples = 500,
             verbose = false,
-            infer_λ = true,
-            infer_r = true,
-            infer_customer_assignments = true,
+            infer_params = Dict(:λ => true, :r => true, :c => true),
             track_diagnostics = false
         )
 
         # Use new API: mcmc(model, y, D, ddcrp_params, priors; opts=...)
         samples = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
-        @test samples isa MCMCSamples
+        @test samples isa AbstractMCMCSamples
         @test size(samples.c) == (500, n)
         @test size(samples.λ) == (500, n)
         @test length(samples.r) == 500
@@ -56,17 +54,16 @@
         opts = MCMCOptions(
             n_samples = 500,
             verbose = false,
-            infer_λ = true,
-            infer_r = true,
-            infer_m = true,
-            infer_customer_assignments = true,
-            track_diagnostics = true
+            infer_params = Dict(:λ => true, :r => true, :m => true, :c => true),
+            track_diagnostics = true,
+            assignment_method = :rjmcmc,
+            birth_proposal = :prior,
+            fixed_dim_mode = :none
         )
 
-        proposal = RJMCMCProposal(PriorProposal(), :none)
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; proposal=proposal, opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
-        @test samples isa MCMCSamples
+        @test samples isa AbstractMCMCSamples
         @test diag isa MCMCDiagnostics
 
         # Check diagnostics
@@ -94,24 +91,21 @@
         ddcrp_params = DDCRPParams(0.1, 5.0)
         priors = NBGammaPoissonGlobalRPriors(2.0, 1.0, 1.0, 1e6)
 
-        birth_proposals = [
-            PriorProposal(),
-            NormalMeanProposal(:empirical, 1.0),
-            MomentMatchedProposal(3),
-            LogNormalProposal(:empirical, 1.0)
-        ]
+        birth_proposal_types = [:prior, :normal_mean, :moment_matched, :lognormal]
 
-        for bp in birth_proposals
-            proposal = RJMCMCProposal(bp, :none)
+        for bp in birth_proposal_types
             opts = MCMCOptions(
                 n_samples = 200,
                 verbose = false,
-                track_diagnostics = true
+                track_diagnostics = true,
+                assignment_method = :rjmcmc,
+                birth_proposal = bp,
+                fixed_dim_mode = :none
             )
 
-            samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; proposal=proposal, opts=opts)
+            samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
-            @test samples isa MCMCSamples
+            @test samples isa AbstractMCMCSamples
             @test all(isfinite.(samples.logpost))
 
             # Check that some birth/death moves were attempted
@@ -133,13 +127,15 @@
         opts = MCMCOptions(
             n_samples = 300,
             verbose = false,
-            track_diagnostics = true
+            track_diagnostics = true,
+            assignment_method = :rjmcmc,
+            birth_proposal = :prior,
+            fixed_dim_mode = :none
         )
 
-        proposal = RJMCMCProposal(PriorProposal(), :none)
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; proposal=proposal, opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
-        @test samples isa MCMCSamples
+        @test samples isa AbstractMCMCSamples
         @test all(isfinite.(samples.logpost))
     end
 
@@ -162,7 +158,7 @@
         # Marginalised model uses GibbsProposal by default
         samples = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
-        @test samples isa MCMCSamples
+        @test samples isa AbstractMCMCSamples
         @test all(isfinite.(samples.logpost))
     end
 
@@ -195,11 +191,13 @@
         opts = MCMCOptions(
             n_samples = 300,
             verbose = false,
-            track_diagnostics = true
+            track_diagnostics = true,
+            assignment_method = :rjmcmc,
+            birth_proposal = :prior,
+            fixed_dim_mode = :none
         )
 
-        proposal = RJMCMCProposal(PriorProposal(), :none)
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; proposal=proposal, opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
         # Test summary function
         summary = summarize_mcmc(samples, diag)
@@ -302,11 +300,13 @@
             n_samples = 100,
             verbose = false,
             track_diagnostics = true,
-            track_pairwise = true
+            track_pairwise = true,
+            assignment_method = :rjmcmc,
+            birth_proposal = :prior,
+            fixed_dim_mode = :none
         )
 
-        proposal = RJMCMCProposal(PriorProposal(), :none)
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; proposal=proposal, opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
         @test !isnothing(diag.propose_matrix)
         @test !isnothing(diag.accept_matrix)
