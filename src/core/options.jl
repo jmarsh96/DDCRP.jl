@@ -25,7 +25,7 @@ struct MCMCOptions
     infer_params::Dict{Symbol, Bool}
     prop_sds::Dict{Symbol, Float64}
     assignment_method::Symbol
-    birth_proposal::Symbol
+    birth_proposal::Union{Symbol, UnivariateDistribution}
     birth_proposal_params::Dict{Symbol, Any}
     fixed_dim_mode::Symbol
     track_diagnostics::Bool
@@ -50,7 +50,7 @@ function MCMCOptions(;
         :p => 0.5
     ),
     assignment_method::Symbol = :auto,
-    birth_proposal::Symbol = :prior,
+    birth_proposal::Union{Symbol, UnivariateDistribution} = :prior,
     birth_proposal_params::Dict{Symbol, Any} = Dict{Symbol, Any}(),
     fixed_dim_mode::Symbol = :none,
     track_diagnostics::Bool = true,
@@ -106,6 +106,8 @@ function build_birth_proposal(opts::MCMCOptions)
         σ_mode = get(params, :σ_mode, :empirical)
         σ_fixed = get(params, :σ_fixed, 1.0)
         return LogNormalProposal(σ_mode, σ_fixed)
+    elseif bp_type isa UnivariateDistribution
+        return bp_type
     else
         error("Unknown birth proposal type: $bp_type")
     end

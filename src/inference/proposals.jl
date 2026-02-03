@@ -215,3 +215,15 @@ function proposal_logpdf(prop::LogNormalProposal, m, S_i, λ, priors)
     log_m = log(m)
     return logpdf(Normal(μ, σ), log_m) - log_m
 end
+
+
+
+function sample_proposal(Q::UnivariateDistribution, S_i, λ, priors)
+    m_new = rand(Q)
+    log_q = logpdf(Q, m_new)
+    return m_new, log_q
+end
+
+function proposal_logpdf(Q::UnivariateDistribution, m, S_i, λ, priors)
+    return logpdf(Q, m)
+end
