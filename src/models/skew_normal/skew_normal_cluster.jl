@@ -123,11 +123,6 @@ struct SkewNormalClusterSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
-
-is_marginalised(::SkewNormalCluster) = false
 
 # ============================================================================
 # RJMCMC Interface
