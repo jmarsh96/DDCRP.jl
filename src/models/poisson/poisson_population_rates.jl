@@ -94,11 +94,6 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::PoissonPopulationRates) = false
-has_global_dispersion(::PoissonPopulationRates) = false
-has_cluster_dispersion(::PoissonPopulationRates) = false
-has_cluster_means(::PoissonPopulationRates) = false
-has_cluster_rates(::PoissonPopulationRates) = true
 is_marginalised(::PoissonPopulationRates) = false
 requires_trials(::PoissonPopulationRates) = true  # Requires exposure P
 
@@ -206,14 +201,7 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     update_cluster_rates!(model, state, data, priors, tables)
-
-    # Note: Assignment updates for this model would need RJMCMC implementation
-    # Currently only supports parameter updates
-
-    return diagnostics
 end
 
 # ============================================================================

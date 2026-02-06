@@ -118,14 +118,137 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::GammaClusterShapeMarg) = false
-has_global_dispersion(::GammaClusterShapeMarg) = false
-has_cluster_dispersion(::GammaClusterShapeMarg) = false
-has_cluster_means(::GammaClusterShapeMarg) = false
-has_cluster_rates(::GammaClusterShapeMarg) = false
-has_cluster_probs(::GammaClusterShapeMarg) = false
-has_cluster_shape(::GammaClusterShapeMarg) = true
-is_marginalised(::GammaClusterShapeMarg) = false  # NOT fully marginalised - has explicit α_k
+is_marginalised(::GammaClusterShapeMarg) = false
+
+# ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::GammaClusterShapeMargState) = (α = state.α_dict,)
+copy_cluster_param_dicts(state::GammaClusterShapeMargState) = (α = copy(state.α_dict),)
+
+function make_candidate_state(::GammaClusterShapeMarg, state::GammaClusterShapeMargState,
+                              c_can::Vector{Int}, params_can::NamedTuple)
+    GammaClusterShapeMargState(c_can, params_can.α)
+end
+
+function commit_params!(state::GammaClusterShapeMargState, params_can::NamedTuple)
+    empty!(state.α_dict); merge!(state.α_dict, params_can.α)
+end
+
+# --- PriorProposal ---
+function sample_birth_params(::GammaClusterShapeMarg, ::PriorProposal,
+                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    Q = Gamma(priors.α_a, 1/priors.α_b)
+    α_new = rand(Q)
+    return (α = α_new,), logpdf(Q, α_new)
+end
+
+function birth_params_logpdf(::GammaClusterShapeMarg, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::GammaClusterShapeMargState, data::ContinuousData,
+                             priors::GammaClusterShapeMargPriors)
+    return logpdf(Gamma(priors.α_a, 1/priors.α_b), params_old.α)
+end
+
+# --- NormalMomentMatch ---
+function sample_birth_params(::GammaClusterShapeMarg, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = fit_gamma_shape_moments(view(y, S_i))
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    Q = truncated(Normal(α_est, prop.σ[1]), 0.0, Inf)
+    α_new = rand(Q)
+    return (α = α_new,), logpdf(Q, α_new)
+end
+
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::GammaClusterShapeMargState, data::ContinuousData,
+                             priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = fit_gamma_shape_moments(view(y, S_i))
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    Q = truncated(Normal(α_est, prop.σ[1]), 0.0, Inf)
+    return logpdf(Q, params_old.α)
+end
+
+# --- InverseGammaMomentMatch (fallback to prior for shape params) ---
+function sample_birth_params(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    return sample_birth_params(GammaClusterShapeMarg(), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::GammaClusterShapeMargState, data::ContinuousData,
+                             priors::GammaClusterShapeMargPriors)
+    return birth_params_logpdf(GammaClusterShapeMarg(), PriorProposal(), params_old, S_i, state, data, priors)
+end
+
+# --- LogNormalMomentMatch ---
+function sample_birth_params(::GammaClusterShapeMarg, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(view(y, S_i))
+    end
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    α_est = max(α_est, 0.01)
+    log_α_est = log(α_est)
+    log_α_new = rand(Normal(log_α_est, prop.σ[1]))
+    α_new = exp(log_α_new)
+    log_q = logpdf(Normal(log_α_est, prop.σ[1]), log_α_new) - log_α_new
+    return (α = α_new,), log_q
+end
+
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::GammaClusterShapeMargState, data::ContinuousData,
+                             priors::GammaClusterShapeMargPriors)
+    if params_old.α <= 0
+        return -Inf
+    end
+    y = observations(data)
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(view(y, S_i))
+    end
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    α_est = max(α_est, 0.01)
+    log_α_est = log(α_est)
+    log_α = log(params_old.α)
+    return logpdf(Normal(log_α_est, prop.σ[1]), log_α) - log_α
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::GammaClusterShapeMarg, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    Q = prop.dists[1]
+    α_new = rand(Q)
+    return (α = α_new,), logpdf(Q, α_new)
+end
+
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::GammaClusterShapeMargState, data::ContinuousData,
+                             priors::GammaClusterShapeMargPriors)
+    return logpdf(prop.dists[1], params_old.α)
+end
 
 # ============================================================================
 # Table Contribution (Marginal Likelihood)
@@ -263,331 +386,14 @@ function update_α_table!(
 end
 
 # ============================================================================
-# Birth Proposal Functions
-# ============================================================================
-
-"""
-    sample_proposal(model::GammaClusterShapeMarg, Q_α::UnivariateDistribution)
-
-Sample a new shape parameter from a UnivariateDistribution.
-Returns (α_new, log_q) where log_q is the log proposal density.
-
-Note: If Q_α has support on ℝ (e.g., Normal), we reject negative samples
-by returning -Inf for log_q, which guarantees MH rejection.
-"""
-function sample_proposal(::GammaClusterShapeMarg, Q_α::UnivariateDistribution)
-    α_new = rand(Q_α)
-    # Gamma shape must be positive - if proposal is invalid, return -Inf log density
-    if α_new <= 0
-        return α_new, -Inf
-    end
-    log_q = logpdf(Q_α, α_new)
-    return α_new, log_q
-end
-
-"""
-    proposal_logpdf(model::GammaClusterShapeMarg, Q_α::UnivariateDistribution, α)
-
-Compute the log density of a UnivariateDistribution proposal at α.
-Returns -Inf for non-positive α since Gamma shape must be positive.
-"""
-function proposal_logpdf(::GammaClusterShapeMarg, Q_α::UnivariateDistribution, α)
-    if α <= 0
-        return -Inf
-    end
-    return logpdf(Q_α, α)
-end
-
-"""
-    sample_proposal(model::GammaClusterShapeMarg, prop::MomentMatchedLogNormalProposal, S_i, y, priors)
-
-Sample a new shape parameter using moment-matched LogNormal proposal.
-Returns (α_new, log_q) where log_q is the log proposal density.
-"""
-function sample_proposal(
-    ::GammaClusterShapeMarg,
-    prop::MomentMatchedLogNormalProposal,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return sample_proposal(prop, S_i, y, priors)
-end
-
-"""
-    proposal_logpdf(model::GammaClusterShapeMarg, prop::MomentMatchedLogNormalProposal, α, S_i, y, priors)
-
-Compute the log density of the moment-matched LogNormal proposal at α.
-"""
-function proposal_logpdf(
-    ::GammaClusterShapeMarg,
-    prop::MomentMatchedLogNormalProposal,
-    α::Real,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return proposal_logpdf(prop, α, S_i, y, priors)
-end
-
-# ============================================================================
-# Internal dispatch helpers for birth proposals
-# ============================================================================
-
-"""
-    _sample_birth_proposal(model, prop::MomentMatchedLogNormalProposal, S_i, y, priors)
-
-Sample using moment-matched LogNormal proposal (data-informed).
-"""
-function _sample_birth_proposal(
-    model::GammaClusterShapeMarg,
-    prop::MomentMatchedLogNormalProposal,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return sample_proposal(prop, S_i, y, priors)
-end
-
-"""
-    _sample_birth_proposal(model, prop::PriorProposal, S_i, y, priors)
-
-Sample from prior Gamma distribution.
-"""
-function _sample_birth_proposal(
-    model::GammaClusterShapeMarg,
-    prop::PriorProposal,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    Q = Gamma(priors.α_a, 1/priors.α_b)
-    return sample_proposal(model, Q)
-end
-
-"""
-    _sample_birth_proposal(model, Q::UnivariateDistribution, S_i, y, priors)
-
-Sample from a generic UnivariateDistribution.
-"""
-function _sample_birth_proposal(
-    model::GammaClusterShapeMarg,
-    Q::UnivariateDistribution,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return sample_proposal(model, Q)
-end
-
-"""
-    _proposal_logpdf(model, prop::MomentMatchedLogNormalProposal, α, S_i, y, priors)
-
-Evaluate moment-matched LogNormal proposal density.
-"""
-function _proposal_logpdf(
-    model::GammaClusterShapeMarg,
-    prop::MomentMatchedLogNormalProposal,
-    α::Real,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return proposal_logpdf(prop, α, S_i, y, priors)
-end
-
-"""
-    _proposal_logpdf(model, prop::PriorProposal, α, S_i, y, priors)
-
-Evaluate prior Gamma proposal density.
-"""
-function _proposal_logpdf(
-    model::GammaClusterShapeMarg,
-    prop::PriorProposal,
-    α::Real,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    Q = Gamma(priors.α_a, 1/priors.α_b)
-    return proposal_logpdf(model, Q, α)
-end
-
-"""
-    _proposal_logpdf(model, Q::UnivariateDistribution, α, S_i, y, priors)
-
-Evaluate generic UnivariateDistribution proposal density.
-"""
-function _proposal_logpdf(
-    model::GammaClusterShapeMarg,
-    Q::UnivariateDistribution,
-    α::Real,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    priors::GammaClusterShapeMargPriors
-)
-    return proposal_logpdf(model, Q, α)
-end
-
-# ============================================================================
-# RJMCMC Update
-# ============================================================================
-
-"""
-    update_c_rjmcmc!(model::GammaClusterShapeMarg, i, state, data, priors, log_DDCRP, opts)
-
-Update customer assignment using RJMCMC (birth/death/fixed dimension moves).
-
-Supports different birth proposals via opts.birth_proposal:
-- :prior (default) - Sample from Gamma prior
-- :moment_matched_lognormal - LogNormal centered at method-of-moments estimate
-- UnivariateDistribution - Sample directly from provided distribution
-"""
-function update_c_rjmcmc!(
-    model::GammaClusterShapeMarg,
-    i::Int,
-    state::GammaClusterShapeMargState,
-    data::ContinuousData,
-    priors::GammaClusterShapeMargPriors,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
-)
-    n = length(state.c)
-    j_old = state.c[i]
-    y = observations(data)
-
-    # Build birth proposal from options
-    birth_prop = build_birth_proposal(opts)
-
-    S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.α_dict)
-    α_old = state.α_dict[table_Si]
-    table_l = setdiff(table_Si, S_i)
-
-    j_star = rand(1:n)
-
-    j_old_in_Si = j_old in S_i
-    j_star_in_Si = j_star in S_i
-
-    α_can = copy(state.α_dict)
-    c_can = copy(state.c)
-    c_can[i] = j_star
-
-    if !j_old_in_Si && j_star_in_Si
-        # ===== BIRTH MOVE =====
-        # Moving set S_i stays where it is, customer i moves to form new cluster
-        # Sample new α for the moving set S_i
-        α_new, log_q_forward = _sample_birth_proposal(model, birth_prop, S_i, y, priors)
-
-        α_can[sort(S_i)] = α_new
-        if !isempty(table_l)
-            α_can[sort(table_l)] = state.α_dict[table_Si]
-        end
-        delete!(α_can, table_Si)
-
-        lpr = -log_q_forward  # Hastings ratio for birth
-
-        state_can = GammaClusterShapeMargState(c_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α_accept = logpost_candidate - logpost_current + lpr
-
-        if log(rand()) < log_α_accept
-            state.c[i] = j_star
-            empty!(state.α_dict)
-            merge!(state.α_dict, α_can)
-            return (:birth, j_star, true)
-        end
-        return (:birth, j_star, false)
-
-    elseif j_old_in_Si && !j_star_in_Si
-        # ===== DEATH MOVE =====
-        # Moving set S_i merges with target cluster
-        table_target = find_table_for_customer(j_star, state.α_dict)
-        α_target = state.α_dict[table_target]
-
-        merged_table = sort(vcat(table_Si, table_target))
-        α_can[merged_table] = α_target
-
-        # Reverse proposal density (for Hastings ratio)
-        log_q_reverse = _proposal_logpdf(model, birth_prop, α_old, S_i, y, priors)
-
-        delete!(α_can, table_Si)
-        delete!(α_can, table_target)
-
-        lpr = log_q_reverse  # Hastings ratio for death
-
-        state_can = GammaClusterShapeMargState(c_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α_accept = logpost_candidate - logpost_current + lpr
-
-        if log(rand()) < log_α_accept
-            state.c[i] = j_star
-            empty!(state.α_dict)
-            merge!(state.α_dict, α_can)
-            return (:death, j_star, true)
-        end
-        return (:death, j_star, false)
-
-    else
-        # ===== FIXED DIMENSION MOVE =====
-        table_old_target = find_table_for_customer(j_old, state.α_dict)
-        table_new_target = find_table_for_customer(j_star, state.α_dict)
-
-        if table_old_target == table_new_target
-            # Same table move - just change assignment, keep α
-            state_can = GammaClusterShapeMargState(c_can, state.α_dict)
-
-            logpost_current = posterior(model, data, state, priors, log_DDCRP)
-            logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-            log_α_accept = logpost_candidate - logpost_current
-
-            if log(rand()) < log_α_accept
-                state.c[i] = j_star
-                return (:fixed, j_star, true)
-            end
-            return (:fixed, j_star, false)
-        end
-
-        # Different tables move
-        new_table_depleted = setdiff(table_old_target, S_i)
-        new_table_augmented = sort(vcat(table_new_target, S_i))
-
-        # Keep existing α values for the modified tables
-        α_depleted = state.α_dict[table_old_target]
-        α_augmented = state.α_dict[table_new_target]
-
-        if !isempty(new_table_depleted)
-            α_can[new_table_depleted] = α_depleted
-        end
-        α_can[new_table_augmented] = α_augmented
-        delete!(α_can, table_old_target)
-        delete!(α_can, table_new_target)
-
-        state_can = GammaClusterShapeMargState(c_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α_accept = logpost_candidate - logpost_current
-
-        if log(rand()) < log_α_accept
-            state.c[i] = j_star
-            empty!(state.α_dict)
-            merge!(state.α_dict, α_can)
-            return (:fixed, j_star, true)
-        end
-        return (:fixed, j_star, false)
-    end
-end
-
-# ============================================================================
 # Update Params Orchestration
 # ============================================================================
 
 """
     update_params!(model::GammaClusterShapeMarg, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters.
+Update model parameters (α). Assignment updates are handled
+separately by `update_c!` in the main MCMC loop.
 """
 function update_params!(
     model::GammaClusterShapeMarg,
@@ -598,24 +404,9 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
-    # 1. Update shape parameters α (MH on log-scale)
     if should_infer(opts, :α)
         update_α!(model, state, data, priors; prop_sd=get_prop_sd(opts, :α))
     end
-
-    # 2. Update assignments c (RJMCMC)
-    if should_infer(opts, :c)
-        for i in 1:nobs(data)
-            move_type, j_star, accepted = update_c_rjmcmc!(
-                model, i, state, data, priors, log_DDCRP, opts
-            )
-            push!(diagnostics, (move_type, i, j_star, accepted))
-        end
-    end
-
-    return diagnostics
 end
 
 # ============================================================================

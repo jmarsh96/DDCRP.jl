@@ -83,11 +83,6 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::PoissonClusterRatesMarg) = false
-has_global_dispersion(::PoissonClusterRatesMarg) = false
-has_cluster_dispersion(::PoissonClusterRatesMarg) = false
-has_cluster_means(::PoissonClusterRatesMarg) = false
-has_cluster_rates(::PoissonClusterRatesMarg) = false
 is_marginalised(::PoissonClusterRatesMarg) = true
 
 # ============================================================================
@@ -160,19 +155,8 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     # No parameter updates - rates are marginalised out
-
-    # Update customer assignments (this is a marginalised model, so uses Gibbs)
-    if should_infer(opts, :c)
-        for i in 1:nobs(data)
-            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
-            push!(diagnostics, (move_type, i, j_star, accepted))
-        end
-    end
-
-    return diagnostics
+    # Assignment updates handled by update_c!
 end
 
 # ============================================================================

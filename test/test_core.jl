@@ -150,9 +150,11 @@
 
         # Test birth proposal types
         @test PriorProposal <: BirthProposal
-        @test NormalMeanProposal <: BirthProposal
-        @test MomentMatchedProposal <: BirthProposal
-        @test LogNormalProposal <: BirthProposal
+        @test ConjugateProposal <: BirthProposal
+        @test NormalMomentMatch <: MomentMatchedProposal
+        @test InverseGammaMomentMatch <: MomentMatchedProposal
+        @test LogNormalMomentMatch <: MomentMatchedProposal
+        @test FixedDistributionProposal <: BirthProposal
     end
 
     @testset "DDCRPParams" begin
@@ -163,40 +165,17 @@
     end
 
     @testset "Trait Functions" begin
-        # NBGammaPoissonGlobalRMarg
-        model_marg = NBGammaPoissonGlobalRMarg()
-        @test has_latent_rates(model_marg) == true
-        @test has_global_dispersion(model_marg) == true
-        @test has_cluster_dispersion(model_marg) == false
-        @test has_cluster_means(model_marg) == false
-        @test is_marginalised(model_marg) == true
+        # Marginalised models
+        @test is_marginalised(NBGammaPoissonGlobalRMarg()) == true
+        @test is_marginalised(PoissonClusterRatesMarg()) == true
+        @test is_marginalised(BinomialClusterProbMarg()) == true
 
-        # NBGammaPoissonGlobalR
-        model_unmarg = NBGammaPoissonGlobalR()
-        @test has_latent_rates(model_unmarg) == true
-        @test has_global_dispersion(model_unmarg) == true
-        @test has_cluster_means(model_unmarg) == true
-        @test is_marginalised(model_unmarg) == false
-
-        # PoissonClusterRates
-        model_poisson = PoissonClusterRates()
-        @test has_latent_rates(model_poisson) == false
-        @test has_cluster_rates(model_poisson) == true
-        @test is_marginalised(model_poisson) == false
-
-        # PoissonClusterRatesMarg
-        model_poisson_marg = PoissonClusterRatesMarg()
-        @test has_cluster_rates(model_poisson_marg) == false
-        @test is_marginalised(model_poisson_marg) == true
-
-        # BinomialClusterProb
-        model_binom = BinomialClusterProb()
-        @test has_cluster_probs(model_binom) == true
-        @test is_marginalised(model_binom) == false
-
-        # BinomialClusterProbMarg
-        model_binom_marg = BinomialClusterProbMarg()
-        @test is_marginalised(model_binom_marg) == true
+        # Unmarginalised models
+        @test is_marginalised(NBGammaPoissonGlobalR()) == false
+        @test is_marginalised(NBGammaPoissonClusterRMarg()) == false
+        @test is_marginalised(PoissonClusterRates()) == false
+        @test is_marginalised(BinomialClusterProb()) == false
+        @test is_marginalised(NBMeanDispersionGlobalR()) == false
     end
 
     @testset "State Types - NBGammaPoissonGlobalRMarg" begin
@@ -294,18 +273,15 @@
         # Test default options
         opts = MCMCOptions()
         @test opts.n_samples == 10000
-        @test opts.assignment_method == :auto
         @test opts.verbose == false
         @test opts.track_diagnostics == true
 
-        # Test with assignment_method
-        opts_gibbs = MCMCOptions(assignment_method=:gibbs)
-        @test opts_gibbs.assignment_method == :gibbs
+        # Test with fixed_dim_mode
+        opts_fdm = MCMCOptions(fixed_dim_mode=:none)
+        @test opts_fdm.fixed_dim_mode == :none
 
-        opts_rjmcmc = MCMCOptions(assignment_method=:rjmcmc, birth_proposal=:prior, fixed_dim_mode=:none)
-        @test opts_rjmcmc.assignment_method == :rjmcmc
-        @test opts_rjmcmc.birth_proposal == :prior
-        @test opts_rjmcmc.fixed_dim_mode == :none
+        opts_wm = MCMCOptions(fixed_dim_mode=:weighted_mean)
+        @test opts_wm.fixed_dim_mode == :weighted_mean
 
         # Test infer_params dictionary
         opts_custom = MCMCOptions(infer_params=Dict(:λ => true, :r => false, :c => true))

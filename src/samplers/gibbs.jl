@@ -12,7 +12,7 @@ using StatsBase
     update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
 
 Internal Gibbs sampling update for customer i's assignment.
-Called by model's update_params! when assignment_method is :gibbs.
+Called by `update_c!` for marginalised models or ConjugateProposal.
 
 Returns (move_type, new_assignment, accepted).
 For Gibbs sampling, move_type is always :gibbs and accepted is always true.
@@ -181,9 +181,3 @@ function update_c_gibbs!(
     return (:gibbs, state.c[i], true)
 end
 
-# ============================================================================
-# Legacy dispatch functions REMOVED
-# ============================================================================
-# AssignmentProposal types have been removed.
-# Assignment updates are now handled directly in each model's update_params!
-# based on MCMCOptions.assignment_method

@@ -135,35 +135,37 @@ function resample_posterior_means(S_i, λ, table_A, m_A, table_B, m_B, priors)
 end
 
 # ============================================================================
-# Internal RJMCMC functions (called by model's update_params!)
+# Generic RJMCMC for Customer Assignments
+# Uses the interface methods from rjmcmc_interface.jl:
+#   cluster_param_dicts, copy_cluster_param_dicts, make_candidate_state,
+#   commit_params!, sample_birth_params, birth_params_logpdf, fixed_dim_params
 # ============================================================================
 
 """
-    update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
+    update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
 
-Internal RJMCMC update for customer i's assignment.
-Called by model's update_params! when assignment_method is :rjmcmc.
+Generic RJMCMC update for customer i's assignment.
+Dispatches on interface methods to handle any number of cluster parameter dicts.
 
 Returns (move_type::Symbol, j_star::Int, accepted::Bool)
 """
 function update_c_rjmcmc!(
-    model::NBGammaPoissonGlobalR,
+    model::LikelihoodModel,
     i::Int,
-    state::NBGammaPoissonGlobalRState,
-    data::CountData,
-    priors::NBGammaPoissonGlobalRPriors,
+    state::AbstractMCMCState,
+    data::AbstractObservedData,
+    priors::AbstractPriors,
+    proposal::BirthProposal,
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    birth_prop = build_birth_proposal(opts)
-    fixed_dim_mode = opts.fixed_dim_mode
-
     n = length(state.c)
     j_old = state.c[i]
 
     S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.m_dict)
-    m_old = state.m_dict[table_Si]
+    dicts = cluster_param_dicts(state)
+    primary_dict = first(dicts)
+    table_Si = find_table_for_customer(i, primary_dict)
     table_l = setdiff(table_Si, S_i)
 
     j_star = rand(1:n)
@@ -171,66 +173,71 @@ function update_c_rjmcmc!(
     j_old_in_Si = j_old in S_i
     j_star_in_Si = j_star in S_i
 
-    m_can = copy(state.m_dict)
+    params_can = copy_cluster_param_dicts(state)
     c_can = copy(state.c)
     c_can[i] = j_star
 
     if !j_old_in_Si && j_star_in_Si
-        # BIRTH
-        m_new, log_q_forward = sample_proposal(birth_prop, S_i, state.λ, priors)
+        # ===== BIRTH MOVE =====
+        params_new, log_q_forward = sample_birth_params(model, proposal, S_i, state, data, priors)
 
-        m_can[sort(S_i)] = m_new
-        m_can[sort(table_l)] = state.m_dict[table_Si]
-        delete!(m_can, table_Si)
+        sorted_Si = sort(S_i)
+        for k in keys(params_can)
+            params_can[k][sorted_Si] = params_new[k]
+            if !isempty(table_l)
+                params_can[k][sort(table_l)] = dicts[k][table_Si]
+            end
+            delete!(params_can[k], table_Si)
+        end
 
         lpr = -log_q_forward
 
-        state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
+        state_can = make_candidate_state(model, state, c_can, params_can)
         log_α = posterior(model, data, state_can, priors, log_DDCRP) -
                 posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
-            empty!(state.m_dict)
-            merge!(state.m_dict, m_can)
+            commit_params!(state, params_can)
             return (:birth, j_star, true)
         end
         return (:birth, j_star, false)
 
     elseif j_old_in_Si && !j_star_in_Si
-        # DEATH
-        table_target = find_table_for_customer(j_star, state.m_dict)
-        m_target = state.m_dict[table_target]
+        # ===== DEATH MOVE =====
+        table_target = find_table_for_customer(j_star, primary_dict)
+        merged_table = sort(vcat(table_Si, table_target))
 
-        m_can[sort(vcat(table_Si, table_target))] = m_target
+        for k in keys(params_can)
+            params_can[k][merged_table] = dicts[k][table_target]
+            delete!(params_can[k], table_Si)
+            delete!(params_can[k], table_target)
+        end
 
-        m_old = state.m_dict[table_Si]
-        log_q_reverse = proposal_logpdf(birth_prop, m_old, S_i, state.λ, priors)
+        # Old params for the moving set (for reverse proposal density)
+        params_old = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+        log_q_reverse = birth_params_logpdf(model, proposal, params_old, S_i, state, data, priors)
         lpr = log_q_reverse
 
-        delete!(m_can, table_Si)
-        delete!(m_can, table_target)
-
-        state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
+        state_can = make_candidate_state(model, state, c_can, params_can)
         log_α = posterior(model, data, state_can, priors, log_DDCRP) -
                 posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
-            empty!(state.m_dict)
-            merge!(state.m_dict, m_can)
+            commit_params!(state, params_can)
             return (:death, j_star, true)
         end
         return (:death, j_star, false)
 
     else
-        # FIXED DIMENSION
-        table_old_target = find_table_for_customer(j_old, state.m_dict)
-        table_new_target = find_table_for_customer(j_star, state.m_dict)
+        # ===== FIXED DIMENSION MOVE =====
+        table_old_target = find_table_for_customer(j_old, primary_dict)
+        table_new_target = find_table_for_customer(j_star, primary_dict)
 
         if table_old_target == table_new_target
-            state_can = NBGammaPoissonGlobalRState(c_can, state.λ, state.m_dict, state.r)
-
+            # Same table - just change link, no parameter changes
+            state_can = make_candidate_state(model, state, c_can, dicts)
             log_α = posterior(model, data, state_can, priors, log_DDCRP) -
                     posterior(model, data, state, priors, log_DDCRP)
 
@@ -241,257 +248,31 @@ function update_c_rjmcmc!(
             return (:fixed, j_star, false)
         end
 
+        # Different tables - transfer S_i from old to new table
         new_table_depleted = setdiff(table_old_target, S_i)
         new_table_augmented = sort(vcat(table_new_target, S_i))
 
-        m_depleted, m_augmented, lpr = compute_fixed_dim_means(
-            fixed_dim_mode, S_i, state.λ,
-            table_old_target, state.m_dict[table_old_target],
-            table_new_target, state.m_dict[table_new_target],
-            priors
-        )
+        params_depl, params_aug, lpr = fixed_dim_params(
+            model, S_i, table_old_target, table_new_target, state, data, priors, opts)
 
-        m_can[new_table_depleted] = m_depleted
-        m_can[new_table_augmented] = m_augmented
-        delete!(m_can, table_old_target)
-        delete!(m_can, table_new_target)
+        for k in keys(params_can)
+            if !isempty(new_table_depleted)
+                params_can[k][new_table_depleted] = params_depl[k]
+            end
+            params_can[k][new_table_augmented] = params_aug[k]
+            delete!(params_can[k], table_old_target)
+            delete!(params_can[k], table_new_target)
+        end
 
-        state_can = NBGammaPoissonGlobalRState(c_can, state.λ, m_can, state.r)
+        state_can = make_candidate_state(model, state, c_can, params_can)
         log_α = posterior(model, data, state_can, priors, log_DDCRP) -
                 posterior(model, data, state, priors, log_DDCRP) + lpr
 
         if log(rand()) < log_α
             state.c[i] = j_star
-            empty!(state.m_dict)
-            merge!(state.m_dict, m_can)
+            commit_params!(state, params_can)
             return (:fixed, j_star, true)
         end
         return (:fixed, j_star, false)
     end
 end
-
-# PoissonClusterRates internal RJMCMC
-function update_c_rjmcmc!(
-    model::PoissonClusterRates,
-    i::Int,
-    state::PoissonClusterRatesState,
-    data::CountData,
-    priors::PoissonClusterRatesPriors,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
-)
-    y = observations(data)
-    n = length(state.c)
-    j_old = state.c[i]
-
-    S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.λ_dict)
-    λ_old = state.λ_dict[table_Si]
-    table_l = setdiff(table_Si, S_i)
-
-    j_star = rand(1:n)
-
-    j_old_in_Si = j_old in S_i
-    j_star_in_Si = j_star in S_i
-
-    λ_can = copy(state.λ_dict)
-    c_can = copy(state.c)
-    c_can[i] = j_star
-
-    if !j_old_in_Si && j_star_in_Si
-        # BIRTH
-        S_k = sum(view(y, S_i))
-        n_k = length(S_i)
-        λ_new = rand(Gamma(priors.λ_a + S_k, 1/(priors.λ_b + n_k)))
-
-        λ_can[sort(S_i)] = λ_new
-        λ_can[sort(table_l)] = state.λ_dict[table_Si]
-        delete!(λ_can, table_Si)
-
-        state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.λ_dict)
-            merge!(state.λ_dict, λ_can)
-            return (:birth, j_star, true)
-        end
-        return (:birth, j_star, false)
-
-    elseif j_old_in_Si && !j_star_in_Si
-        # DEATH
-        table_target = find_table_for_customer(j_star, state.λ_dict)
-        λ_target = state.λ_dict[table_target]
-
-        λ_can[sort(vcat(table_Si, table_target))] = λ_target
-        delete!(λ_can, table_Si)
-        delete!(λ_can, table_target)
-
-        state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.λ_dict)
-            merge!(state.λ_dict, λ_can)
-            return (:death, j_star, true)
-        end
-        return (:death, j_star, false)
-
-    else
-        # FIXED DIMENSION
-        table_old_target = find_table_for_customer(j_old, state.λ_dict)
-        table_new_target = find_table_for_customer(j_star, state.λ_dict)
-
-        if table_old_target == table_new_target
-            state_can = PoissonClusterRatesState(c_can, state.λ_dict)
-            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                    posterior(model, data, state, priors, log_DDCRP)
-
-            if log(rand()) < log_α
-                state.c[i] = j_star
-                return (:fixed, j_star, true)
-            end
-            return (:fixed, j_star, false)
-        end
-
-        new_table_depleted = setdiff(table_old_target, S_i)
-        new_table_augmented = sort(vcat(table_new_target, S_i))
-
-        λ_can[new_table_depleted] = state.λ_dict[table_old_target]
-        λ_can[new_table_augmented] = state.λ_dict[table_new_target]
-        delete!(λ_can, table_old_target)
-        delete!(λ_can, table_new_target)
-
-        state_can = PoissonClusterRatesState(c_can, λ_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.λ_dict)
-            merge!(state.λ_dict, λ_can)
-            return (:fixed, j_star, true)
-        end
-        return (:fixed, j_star, false)
-    end
-end
-
-# BinomialClusterProb internal RJMCMC
-function update_c_rjmcmc!(
-    model::BinomialClusterProb,
-    i::Int,
-    state::BinomialClusterProbState,
-    data::CountDataWithTrials,
-    priors::BinomialClusterProbPriors,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
-)
-    y = observations(data)
-    n = length(state.c)
-    j_old = state.c[i]
-
-    S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.p_dict)
-    p_old = state.p_dict[table_Si]
-    table_l = setdiff(table_Si, S_i)
-
-    j_star = rand(1:n)
-
-    j_old_in_Si = j_old in S_i
-    j_star_in_Si = j_star in S_i
-
-    p_can = copy(state.p_dict)
-    c_can = copy(state.c)
-    c_can[i] = j_star
-
-    if !j_old_in_Si && j_star_in_Si
-        # BIRTH
-        S_k = sum(view(y, S_i))
-        n_k = length(S_i)
-        p_new = rand(Beta(priors.p_a + S_k, priors.p_b + n_k - S_k))
-
-        p_can[sort(S_i)] = p_new
-        p_can[sort(table_l)] = state.p_dict[table_Si]
-        delete!(p_can, table_Si)
-
-        state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.p_dict)
-            merge!(state.p_dict, p_can)
-            return (:birth, j_star, true)
-        end
-        return (:birth, j_star, false)
-
-    elseif j_old_in_Si && !j_star_in_Si
-        # DEATH
-        table_target = find_table_for_customer(j_star, state.p_dict)
-        p_target = state.p_dict[table_target]
-
-        p_can[sort(vcat(table_Si, table_target))] = p_target
-        delete!(p_can, table_Si)
-        delete!(p_can, table_target)
-
-        state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.p_dict)
-            merge!(state.p_dict, p_can)
-            return (:death, j_star, true)
-        end
-        return (:death, j_star, false)
-
-    else
-        # FIXED DIMENSION
-        table_old_target = find_table_for_customer(j_old, state.p_dict)
-        table_new_target = find_table_for_customer(j_star, state.p_dict)
-
-        if table_old_target == table_new_target
-            state_can = BinomialClusterProbState(c_can, state.p_dict)
-            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                    posterior(model, data, state, priors, log_DDCRP)
-
-            if log(rand()) < log_α
-                state.c[i] = j_star
-                return (:fixed, j_star, true)
-            end
-            return (:fixed, j_star, false)
-        end
-
-        new_table_depleted = setdiff(table_old_target, S_i)
-        new_table_augmented = sort(vcat(table_new_target, S_i))
-
-        p_can[new_table_depleted] = state.p_dict[table_old_target]
-        p_can[new_table_augmented] = state.p_dict[table_new_target]
-        delete!(p_can, table_old_target)
-        delete!(p_can, table_new_target)
-
-        state_can = BinomialClusterProbState(c_can, p_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP)
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.p_dict)
-            merge!(state.p_dict, p_can)
-            return (:fixed, j_star, true)
-        end
-        return (:fixed, j_star, false)
-    end
-end
-
-# ============================================================================
-# Legacy dispatch code REMOVED
-# ============================================================================
-# RJMCMCProposal and RJMCMC_Strategy types have been removed.
-# Use update_c_rjmcmc! directly or through model's update_params!

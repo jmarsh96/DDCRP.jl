@@ -22,7 +22,7 @@
             track_diagnostics = false
         )
 
-        # Use new API: mcmc(model, y, D, ddcrp_params, priors; opts=...)
+        # Marginalised model uses ConjugateProposal (default PriorProposal also works)
         samples = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
         @test samples isa AbstractMCMCSamples
@@ -56,12 +56,10 @@
             verbose = false,
             infer_params = Dict(:λ => true, :r => true, :m => true, :c => true),
             track_diagnostics = true,
-            assignment_method = :rjmcmc,
-            birth_proposal = :prior,
             fixed_dim_mode = :none
         )
 
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
 
         @test samples isa AbstractMCMCSamples
         @test diag isa MCMCDiagnostics
@@ -91,19 +89,22 @@
         ddcrp_params = DDCRPParams(0.1, 5.0)
         priors = NBGammaPoissonGlobalRPriors(2.0, 1.0, 1.0, 1e6)
 
-        birth_proposal_types = [:prior, :normal_mean, :moment_matched, :lognormal]
+        proposals = [
+            PriorProposal(),
+            NormalMomentMatch(1.0),
+            InverseGammaMomentMatch(3),
+            LogNormalMomentMatch(0.5),
+        ]
 
-        for bp in birth_proposal_types
+        for prop in proposals
             opts = MCMCOptions(
                 n_samples = 200,
                 verbose = false,
                 track_diagnostics = true,
-                assignment_method = :rjmcmc,
-                birth_proposal = bp,
                 fixed_dim_mode = :none
             )
 
-            samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
+            samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, prop; opts=opts)
 
             @test samples isa AbstractMCMCSamples
             @test all(isfinite.(samples.logpost))
@@ -128,12 +129,10 @@
             n_samples = 300,
             verbose = false,
             track_diagnostics = true,
-            assignment_method = :rjmcmc,
-            birth_proposal = :prior,
             fixed_dim_mode = :none
         )
 
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
 
         @test samples isa AbstractMCMCSamples
         @test all(isfinite.(samples.logpost))
@@ -155,7 +154,7 @@
             track_diagnostics = false
         )
 
-        # Marginalised model uses GibbsProposal by default
+        # Marginalised model - default PriorProposal uses gibbs pathway
         samples = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
 
         @test samples isa AbstractMCMCSamples
@@ -174,7 +173,8 @@
         priors = BinomialClusterProbMargPriors(2.0, 2.0)
 
         # Test that the model components work
-        state = initialise_state(model, data.y, N, data.D, ddcrp_params, priors)
+        binom_data = CountDataWithTrials(data.y, N, data.D)
+        state = initialise_state(model, binom_data, ddcrp_params, priors)
         @test state isa BinomialClusterProbMargState
     end
 
@@ -192,12 +192,10 @@
             n_samples = 300,
             verbose = false,
             track_diagnostics = true,
-            assignment_method = :rjmcmc,
-            birth_proposal = :prior,
             fixed_dim_mode = :none
         )
 
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
 
         # Test summary function
         summary = summarize_mcmc(samples, diag)
@@ -301,12 +299,10 @@
             verbose = false,
             track_diagnostics = true,
             track_pairwise = true,
-            assignment_method = :rjmcmc,
-            birth_proposal = :prior,
             fixed_dim_mode = :none
         )
 
-        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors; opts=opts)
+        samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
 
         @test !isnothing(diag.propose_matrix)
         @test !isnothing(diag.accept_matrix)
@@ -329,7 +325,8 @@
             model = NBGammaPoissonClusterRMarg()
             priors = NBGammaPoissonClusterRMargPriors(2.0, 1.0, 1.0, 1e6)
 
-            state = initialise_state(model, data.y, data.D, ddcrp_params, priors)
+            count_data = CountData(data.y, data.D)
+            state = initialise_state(model, count_data, ddcrp_params, priors)
             @test state isa NBGammaPoissonClusterRMargState
             @test !isempty(state.r_dict)
         end
@@ -338,7 +335,8 @@
             model = NBMeanDispersionGlobalR()
             priors = NBMeanDispersionGlobalRPriors(2.0, 1.0, 1.0, 1e6)
 
-            state = initialise_state(model, data.y, data.D, ddcrp_params, priors)
+            count_data = CountData(data.y, data.D)
+            state = initialise_state(model, count_data, ddcrp_params, priors)
             @test state isa NBMeanDispersionGlobalRState
             @test state.r > 0
         end
@@ -347,7 +345,8 @@
             model = NBMeanDispersionClusterR()
             priors = NBMeanDispersionClusterRPriors(2.0, 1.0, 1.0, 1e6)
 
-            state = initialise_state(model, data.y, data.D, ddcrp_params, priors)
+            count_data = CountData(data.y, data.D)
+            state = initialise_state(model, count_data, ddcrp_params, priors)
             @test state isa NBMeanDispersionClusterRState
             @test !isempty(state.r_dict)
         end
@@ -360,7 +359,8 @@
             P = rand(n) .* 1000 .+ 100
             y_pop = rand.(Poisson.(P .* 0.01))
 
-            state = initialise_state(model, y_pop, P, data.D, ddcrp_params, priors)
+            pop_data = CountDataWithTrials(y_pop, round.(Int, P), data.D)
+            state = initialise_state(model, pop_data, ddcrp_params, priors)
             @test state isa PoissonPopulationRatesState
             @test !isempty(state.ρ_dict)
         end

@@ -99,11 +99,6 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::NBGammaPoissonGlobalRMarg) = true
-has_global_dispersion(::NBGammaPoissonGlobalRMarg) = true
-has_cluster_dispersion(::NBGammaPoissonGlobalRMarg) = false
-has_cluster_means(::NBGammaPoissonGlobalRMarg) = false
-has_cluster_rates(::NBGammaPoissonGlobalRMarg) = false
 is_marginalised(::NBGammaPoissonGlobalRMarg) = true
 
 # ============================================================================
@@ -241,29 +236,16 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
-    # Update λ
     if should_infer(opts, :λ)
         for i in 1:nobs(data)
             update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
-    # Update r
     if should_infer(opts, :r)
         update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
-
-    # Update customer assignments (this is a marginalised model, so uses Gibbs)
-    if should_infer(opts, :c)
-        for i in 1:nobs(data)
-            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
-            push!(diagnostics, (move_type, i, j_star, accepted))
-        end
-    end
-
-    return diagnostics
+    # Assignment updates handled by update_c!
 end
 
 # ============================================================================

@@ -78,7 +78,7 @@ Abstract supertype for MCMC output containers.
 abstract type AbstractMCMCSamples end
 
 # ============================================================================
-# Birth Proposals for RJMCMC (defined first as they're used by RJMCMCProposal)
+# Birth Proposals for RJMCMC
 # ============================================================================
 
 """
@@ -86,6 +86,7 @@ abstract type AbstractMCMCSamples end
 
 Abstract supertype for RJMCMC birth proposal distributions.
 Controls how new cluster parameters are proposed when clusters split.
+Proposal objects are passed directly to `mcmc` and carry their own configuration.
 """
 abstract type BirthProposal end
 
@@ -93,28 +94,43 @@ abstract type BirthProposal end
     PriorProposal <: BirthProposal
 
 Sample new cluster parameters from the prior distribution.
-No Hastings correction needed when prior = proposal.
 """
 struct PriorProposal <: BirthProposal end
 
 """
-    NormalMeanProposal <: BirthProposal
+    ConjugateProposal <: BirthProposal
 
-Sample new cluster mean from truncated Normal centered at empirical mean.
-
-# Fields
-- `σ_mode::Symbol`: How to compute proposal std (:fixed, :empirical, :scaled)
-- `σ_fixed::Float64`: Fixed value used when σ_mode == :fixed
+Marker type indicating the model has conjugate cluster parameters.
+When used, `update_c!` dispatches to Gibbs sampling for assignments
+instead of RJMCMC, and cluster parameters are resampled from their
+conjugate posteriors after assignment updates.
 """
-struct NormalMeanProposal <: BirthProposal
-    σ_mode::Symbol
-    σ_fixed::Float64
-end
-NormalMeanProposal() = NormalMeanProposal(:empirical, 1.0)
-NormalMeanProposal(σ::Float64) = NormalMeanProposal(:fixed, σ)
+struct ConjugateProposal <: BirthProposal end
 
 """
     MomentMatchedProposal <: BirthProposal
+
+Abstract supertype for data-informed birth proposals that use
+empirical moments of the moving set to construct the proposal distribution.
+"""
+abstract type MomentMatchedProposal <: BirthProposal end
+
+"""
+    NormalMomentMatch <: MomentMatchedProposal
+
+Sample new cluster parameters from truncated Normal centered at empirical mean.
+
+# Fields
+- `σ::Vector{Float64}`: One proposal std per cluster parameter
+"""
+struct NormalMomentMatch <: MomentMatchedProposal
+    σ::Vector{Float64}
+end
+NormalMomentMatch(σ::Float64) = NormalMomentMatch([σ])
+NormalMomentMatch(σs::Float64...) = NormalMomentMatch(collect(σs))
+
+"""
+    InverseGammaMomentMatch <: MomentMatchedProposal
 
 Fit InverseGamma to data in moving set via method of moments.
 Falls back to prior if moment matching fails.
@@ -122,92 +138,46 @@ Falls back to prior if moment matching fails.
 # Fields
 - `min_size::Int`: Minimum cluster size to attempt moment matching
 """
-struct MomentMatchedProposal <: BirthProposal
+struct InverseGammaMomentMatch <: MomentMatchedProposal
     min_size::Int
 end
-MomentMatchedProposal() = MomentMatchedProposal(3)
+InverseGammaMomentMatch() = InverseGammaMomentMatch(3)
 
 """
-    LogNormalProposal <: BirthProposal
+    LogNormalMomentMatch <: MomentMatchedProposal
 
-Sample on log-scale: log(m_new) ~ Normal(μ, σ).
-Appropriate when λ values span orders of magnitude.
+Sample on log-scale using moment-matched LogNormal proposal.
+For each parameter, proposes log(θ) ~ Normal(log(θ_est), σ) where
+θ_est is a moment-based estimate.
 
 # Fields
-- `σ_mode::Symbol`: How to compute proposal std (:fixed, :empirical)
-- `σ_fixed::Float64`: Fixed value used when σ_mode == :fixed
+- `σ::Vector{Float64}`: One proposal std per cluster parameter (on log-scale)
+- `min_size::Int`: Minimum cluster size for moment estimation
 """
-struct LogNormalProposal <: BirthProposal
-    σ_mode::Symbol
-    σ_fixed::Float64
-end
-LogNormalProposal() = LogNormalProposal(:empirical, 1.0)
-LogNormalProposal(σ::Float64) = LogNormalProposal(:fixed, σ)
-
-"""
-    MomentMatchedLogNormalProposal <: BirthProposal
-
-Sample from LogNormal centered at method-of-moments estimate.
-For Gamma shape parameter α: α_est = μ²/σ² where μ, σ² are sample mean/variance.
-Proposes log(α) ~ Normal(log(α_est), σ), guaranteeing positivity.
-
-# Fields
-- `σ_fixed::Float64`: Standard deviation on log-scale (default: 0.5)
-- `min_size::Int`: Minimum cluster size for moment estimation (default: 2)
-"""
-struct MomentMatchedLogNormalProposal <: BirthProposal
-    σ_fixed::Float64
+struct LogNormalMomentMatch <: MomentMatchedProposal
+    σ::Vector{Float64}
     min_size::Int
 end
-MomentMatchedLogNormalProposal() = MomentMatchedLogNormalProposal(0.5, 2)
-MomentMatchedLogNormalProposal(σ::Float64) = MomentMatchedLogNormalProposal(σ, 2)
+LogNormalMomentMatch(σ::Float64; min_size::Int=2) = LogNormalMomentMatch([σ], min_size)
+LogNormalMomentMatch(σs::Vector{Float64}; min_size::Int=2) = LogNormalMomentMatch(σs, min_size)
+
+"""
+    FixedDistributionProposal <: BirthProposal
+
+Sample new cluster parameters from user-specified fixed distributions.
+
+# Fields
+- `dists::Vector{UnivariateDistribution}`: One distribution per cluster parameter
+"""
+struct FixedDistributionProposal <: BirthProposal
+    dists::Vector{UnivariateDistribution}
+end
+FixedDistributionProposal(d::UnivariateDistribution) = FixedDistributionProposal([d])
 
 
 # ============================================================================
-# Model Trait Functions (to be implemented by each model variant)
+# Model Trait Functions
 # ============================================================================
-
-"""
-    has_latent_rates(model::LikelihoodModel) -> Bool
-
-Returns true if the model uses latent observation-level rates (λ_i).
-"""
-has_latent_rates(::LikelihoodModel) = false
-
-"""
-    has_global_dispersion(model::LikelihoodModel) -> Bool
-
-Returns true if the model has a global dispersion parameter (r).
-"""
-has_global_dispersion(::LikelihoodModel) = false
-
-"""
-    has_cluster_dispersion(model::LikelihoodModel) -> Bool
-
-Returns true if the model has cluster-specific dispersion parameters (r_k).
-"""
-has_cluster_dispersion(::LikelihoodModel) = false
-
-"""
-    has_cluster_means(model::LikelihoodModel) -> Bool
-
-Returns true if the model maintains explicit cluster mean parameters (m_k).
-"""
-has_cluster_means(::LikelihoodModel) = false
-
-"""
-    has_cluster_rates(model::LikelihoodModel) -> Bool
-
-Returns true if the model maintains explicit cluster rate parameters (λ_k or ρ_k).
-"""
-has_cluster_rates(::LikelihoodModel) = false
-
-"""
-    has_cluster_probs(model::LikelihoodModel) -> Bool
-
-Returns true if the model maintains explicit cluster probability parameters (p_k).
-"""
-has_cluster_probs(::LikelihoodModel) = false
 
 """
     is_marginalised(model::LikelihoodModel) -> Bool
@@ -216,34 +186,6 @@ Returns true if cluster parameters are integrated out analytically.
 Marginalised models use Gibbs sampling for customer assignments.
 """
 is_marginalised(::LikelihoodModel) = false
-
-"""
-    has_latent_augmentation(model::LikelihoodModel) -> Bool
-
-Returns true if the model uses latent augmentation variables (e.g., h_i for Skew Normal).
-"""
-has_latent_augmentation(::LikelihoodModel) = false
-
-"""
-    has_cluster_location(model::LikelihoodModel) -> Bool
-
-Returns true if the model has cluster-specific location parameters (ξ_k).
-"""
-has_cluster_location(::LikelihoodModel) = false
-
-"""
-    has_cluster_scale(model::LikelihoodModel) -> Bool
-
-Returns true if the model has cluster-specific scale parameters (ω_k).
-"""
-has_cluster_scale(::LikelihoodModel) = false
-
-"""
-    has_cluster_shape(model::LikelihoodModel) -> Bool
-
-Returns true if the model has cluster-specific shape parameters (α_k).
-"""
-has_cluster_shape(::LikelihoodModel) = false
 
 # ============================================================================
 # Observed Data Types

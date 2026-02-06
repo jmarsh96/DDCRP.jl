@@ -87,13 +87,68 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::BinomialClusterProb) = false
-has_global_dispersion(::BinomialClusterProb) = false
-has_cluster_dispersion(::BinomialClusterProb) = false
-has_cluster_means(::BinomialClusterProb) = false
-has_cluster_rates(::BinomialClusterProb) = false
-has_cluster_probs(::BinomialClusterProb) = true
 is_marginalised(::BinomialClusterProb) = false
+
+# ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::BinomialClusterProbState) = (p = state.p_dict,)
+copy_cluster_param_dicts(state::BinomialClusterProbState) = (p = copy(state.p_dict),)
+
+function make_candidate_state(::BinomialClusterProb, state::BinomialClusterProbState,
+                              c_can::Vector{Int}, params_can::NamedTuple)
+    BinomialClusterProbState(c_can, params_can.p)
+end
+
+function commit_params!(state::BinomialClusterProbState, params_can::NamedTuple)
+    empty!(state.p_dict); merge!(state.p_dict, params_can.p)
+end
+
+# --- PriorProposal (samples from conjugate posterior) ---
+function sample_birth_params(::BinomialClusterProb, ::PriorProposal,
+                             S_i::Vector{Int}, state::BinomialClusterProbState,
+                             data::CountDataWithTrials, priors::BinomialClusterProbPriors)
+    y = observations(data)
+    N = trials(data)
+    y_Si = view(y, S_i)
+    N_Si = N isa Int ? fill(N, length(S_i)) : view(N, S_i)
+    S_k = sum(y_Si)
+    F_k = sum(N_Si) - S_k
+    Q = Beta(priors.p_a + S_k, priors.p_b + F_k)
+    p_new = rand(Q)
+    return (p = p_new,), logpdf(Q, p_new)
+end
+
+function birth_params_logpdf(::BinomialClusterProb, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::BinomialClusterProbState, data::CountDataWithTrials,
+                             priors::BinomialClusterProbPriors)
+    y = observations(data)
+    N = trials(data)
+    y_Si = view(y, S_i)
+    N_Si = N isa Int ? fill(N, length(S_i)) : view(N, S_i)
+    S_k = sum(y_Si)
+    F_k = sum(N_Si) - S_k
+    Q = Beta(priors.p_a + S_k, priors.p_b + F_k)
+    return logpdf(Q, params_old.p)
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::BinomialClusterProb, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::BinomialClusterProbState,
+                             data::CountDataWithTrials, priors::BinomialClusterProbPriors)
+    Q = prop.dists[1]
+    p_new = rand(Q)
+    return (p = p_new,), logpdf(Q, p_new)
+end
+
+function birth_params_logpdf(::BinomialClusterProb, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::BinomialClusterProbState, data::CountDataWithTrials,
+                             priors::BinomialClusterProbPriors)
+    return logpdf(prop.dists[1], params_old.p)
+end
 
 # ============================================================================
 # Table Contribution
@@ -191,7 +246,8 @@ end
 """
     update_params!(model::BinomialClusterProb, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters.
+Update cluster probabilities via conjugate Gibbs sampling.
+Assignment updates are handled separately by `update_c!`.
 """
 function update_params!(
     model::BinomialClusterProb,
@@ -202,13 +258,7 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     update_cluster_probs!(model, state, data, priors, tables)
-
-    # Note: Assignment updates would need RJMCMC implementation for this unmarginalised model
-
-    return diagnostics
 end
 
 # ============================================================================

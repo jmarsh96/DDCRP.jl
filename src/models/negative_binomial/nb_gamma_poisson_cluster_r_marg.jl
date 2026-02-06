@@ -99,12 +99,120 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::NBGammaPoissonClusterRMarg) = true
-has_global_dispersion(::NBGammaPoissonClusterRMarg) = false
-has_cluster_dispersion(::NBGammaPoissonClusterRMarg) = true
-has_cluster_means(::NBGammaPoissonClusterRMarg) = false
-has_cluster_rates(::NBGammaPoissonClusterRMarg) = false
-is_marginalised(::NBGammaPoissonClusterRMarg) = true
+is_marginalised(::NBGammaPoissonClusterRMarg) = false
+
+# ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::NBGammaPoissonClusterRMargState) = (r = state.r_dict,)
+copy_cluster_param_dicts(state::NBGammaPoissonClusterRMargState) = (r = copy(state.r_dict),)
+
+function make_candidate_state(::NBGammaPoissonClusterRMarg, state::NBGammaPoissonClusterRMargState,
+                              c_can::Vector{Int}, params_can::NamedTuple)
+    NBGammaPoissonClusterRMargState(c_can, state.λ, params_can.r)
+end
+
+function commit_params!(state::NBGammaPoissonClusterRMargState, params_can::NamedTuple)
+    empty!(state.r_dict); merge!(state.r_dict, params_can.r)
+end
+
+# --- PriorProposal ---
+function sample_birth_params(::NBGammaPoissonClusterRMarg, ::PriorProposal,
+                             S_i::Vector{Int}, state::NBGammaPoissonClusterRMargState,
+                             data::CountData, priors::NBGammaPoissonClusterRMargPriors)
+    Q = Gamma(priors.r_a, 1/priors.r_b)
+    r_new = rand(Q)
+    return (r = r_new,), logpdf(Q, r_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonClusterRMarg, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonClusterRMargState, data::CountData,
+                             priors::NBGammaPoissonClusterRMargPriors)
+    return logpdf(Gamma(priors.r_a, 1/priors.r_b), params_old.r)
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::NBGammaPoissonClusterRMarg, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::NBGammaPoissonClusterRMargState,
+                             data::CountData, priors::NBGammaPoissonClusterRMargPriors)
+    Q = prop.dists[1]
+    r_new = rand(Q)
+    return (r = r_new,), logpdf(Q, r_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonClusterRMarg, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonClusterRMargState, data::CountData,
+                             priors::NBGammaPoissonClusterRMargPriors)
+    return logpdf(prop.dists[1], params_old.r)
+end
+
+# --- NormalMomentMatch ---
+function sample_birth_params(::NBGammaPoissonClusterRMarg, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::NBGammaPoissonClusterRMargState,
+                             data::CountData, priors::NBGammaPoissonClusterRMargPriors)
+    λ_Si = view(state.λ, S_i)
+    μ_λ = mean(λ_Si)
+    v_λ = var(λ_Si; corrected=false)
+    r_est = v_λ > 0 ? μ_λ^2 / v_λ : priors.r_a / priors.r_b
+    Q = truncated(Normal(r_est, prop.σ[1]), 0.0, Inf)
+    r_new = rand(Q)
+    return (r = r_new,), logpdf(Q, r_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonClusterRMarg, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonClusterRMargState, data::CountData,
+                             priors::NBGammaPoissonClusterRMargPriors)
+    λ_Si = view(state.λ, S_i)
+    μ_λ = mean(λ_Si)
+    v_λ = var(λ_Si; corrected=false)
+    r_est = v_λ > 0 ? μ_λ^2 / v_λ : priors.r_a / priors.r_b
+    Q = truncated(Normal(r_est, prop.σ[1]), 0.0, Inf)
+    return logpdf(Q, params_old.r)
+end
+
+# --- LogNormalMomentMatch ---
+function sample_birth_params(::NBGammaPoissonClusterRMarg, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::NBGammaPoissonClusterRMargState,
+                             data::CountData, priors::NBGammaPoissonClusterRMargPriors)
+    λ_Si = view(state.λ, S_i)
+    μ_λ = mean(λ_Si)
+    v_λ = var(λ_Si; corrected=false)
+    r_est = v_λ > 0 ? μ_λ^2 / v_λ : priors.r_a / priors.r_b
+    log_r_est = log(max(r_est, 1e-6))
+    Q = Normal(log_r_est, prop.σ[1])
+    log_r_new = rand(Q)
+    r_new = exp(log_r_new)
+    return (r = r_new,), logpdf(Q, log_r_new) - log_r_new
+end
+
+function birth_params_logpdf(::NBGammaPoissonClusterRMarg, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonClusterRMargState, data::CountData,
+                             priors::NBGammaPoissonClusterRMargPriors)
+    λ_Si = view(state.λ, S_i)
+    μ_λ = mean(λ_Si)
+    v_λ = var(λ_Si; corrected=false)
+    r_est = v_λ > 0 ? μ_λ^2 / v_λ : priors.r_a / priors.r_b
+    log_r_est = log(max(r_est, 1e-6))
+    Q = Normal(log_r_est, prop.σ[1])
+    log_r_old = log(params_old.r)
+    return logpdf(Q, log_r_old) - log_r_old
+end
+
+# --- Fixed-Dimension Params (uses compute_fixed_dim_means for r) ---
+function fixed_dim_params(::NBGammaPoissonClusterRMarg, S_i, table_old, table_new,
+                          state::NBGammaPoissonClusterRMargState, data, priors, opts)
+    r_A = state.r_dict[table_old]
+    r_B = state.r_dict[table_new]
+    r_A_new, r_B_new, lpr = compute_fixed_dim_means(
+        opts.fixed_dim_mode, S_i, state.λ,
+        table_old, r_A, table_new, r_B, priors)
+    return (r = r_A_new,), (r = r_B_new,), lpr
+end
 
 # ============================================================================
 # Table Contribution
@@ -244,143 +352,10 @@ function update_r_table!(
     end
 end
 
-    
-"""
-    update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
-
-Internal RJMCMC update for customer i's assignment.
-Called by model's update_params! when assignment_method is :rjmcmc.
-
-Returns (move_type::Symbol, j_star::Int, accepted::Bool)
-"""
-function update_c_rjmcmc!(
-    model::NBGammaPoissonClusterRMarg,
-    i::Int,
-    state::NBGammaPoissonClusterRMargState,
-    data::CountData,
-    priors::NBGammaPoissonClusterRMargPriors,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
-)
-    birth_prop = build_birth_proposal(opts)
-    fixed_dim_mode = opts.fixed_dim_mode
-
-    n = length(state.c)
-    j_old = state.c[i]
-
-    S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.r_dict)
-    m_old = state.r_dict[table_Si]
-    table_l = setdiff(table_Si, S_i)
-
-    j_star = rand(1:n)
-
-    j_old_in_Si = j_old in S_i
-    j_star_in_Si = j_star in S_i
-
-    r_can = copy(state.r_dict)
-    c_can = copy(state.c)
-    c_can[i] = j_star
-
-    if !j_old_in_Si && j_star_in_Si
-        # BIRTH
-        r_new, log_q_forward = sample_proposal(birth_prop, S_i, state.λ, priors)
-
-        r_can[sort(S_i)] = r_new
-        r_can[sort(table_l)] = state.r_dict[table_Si]
-        delete!(r_can, table_Si)
-
-        lpr = -log_q_forward
-
-        state_can = NBGammaPoissonClusterRMargState(c_can, state.λ, r_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP) + lpr
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.r_dict)
-            merge!(state.r_dict, r_can)
-            return (:birth, j_star, true)
-        end
-        return (:birth, j_star, false)
-
-    elseif j_old_in_Si && !j_star_in_Si
-        # DEATH
-        table_target = find_table_for_customer(j_star, state.r_dict)
-        r_target = state.r_dict[table_target]
-
-        r_can[sort(vcat(table_Si, table_target))] = r_target
-
-        r_old = state.r_dict[table_Si]
-        log_q_reverse = proposal_logpdf(birth_prop, r_old, S_i, state.λ, priors)
-        lpr = log_q_reverse
-
-        delete!(r_can, table_Si)
-        delete!(r_can, table_target)
-
-        state_can = NBGammaPoissonClusterRMargState(c_can, state.λ, r_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP) + lpr
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.r_dict)
-            merge!(state.r_dict, r_can)
-            return (:death, j_star, true)
-        end
-        return (:death, j_star, false)
-
-    else
-        # FIXED DIMENSION
-        table_old_target = find_table_for_customer(j_old, state.r_dict)
-        table_new_target = find_table_for_customer(j_star, state.r_dict)
-
-        if table_old_target == table_new_target
-            state_can = NBGammaPoissonClusterRMargState(c_can, state.λ, state.r_dict)
-
-            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                    posterior(model, data, state, priors, log_DDCRP)
-
-            if log(rand()) < log_α
-                state.c[i] = j_star
-                return (:fixed, j_star, true)
-            end
-            return (:fixed, j_star, false)
-        end
-
-        new_table_depleted = setdiff(table_old_target, S_i)
-        new_table_augmented = sort(vcat(table_new_target, S_i))
-
-        r_depleted, r_augmented, lpr = compute_fixed_dim_means(
-            fixed_dim_mode, S_i, state.λ,
-            table_old_target, state.r_dict[table_old_target],
-            table_new_target, state.r_dict[table_new_target],
-            priors
-        )
-
-        r_can[new_table_depleted] = r_depleted
-        r_can[new_table_augmented] = r_augmented
-        delete!(r_can, table_old_target)
-        delete!(r_can, table_new_target)
-
-        state_can = NBGammaPoissonClusterRMargState(c_can, state.λ, r_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP) + lpr
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.r_dict)
-            merge!(state.r_dict, r_can)
-            return (:fixed, j_star, true)
-        end
-        return (:fixed, j_star, false)
-    end
-end
-
 """
     update_params!(model::NBGammaPoissonClusterRMarg, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters (λ and r_k).
+Update λ and r_k parameters. Assignment updates are handled separately by `update_c!`.
 """
 function update_params!(
     model::NBGammaPoissonClusterRMarg,
@@ -391,8 +366,6 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     if should_infer(opts, :λ)
         for i in 1:nobs(data)
             update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
@@ -402,16 +375,6 @@ function update_params!(
     if should_infer(opts, :r)
         update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
-
-    # Update customer assignments (this is a marginalised model for m, so uses Gibbs)
-    if should_infer(opts, :c)
-        for i in 1:nobs(data)
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
-            push!(diagnostics, (move_type, i, j_star, accepted))
-        end
-    end
-
-    return diagnostics
 end
 
 # ============================================================================

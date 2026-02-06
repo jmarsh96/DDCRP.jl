@@ -87,12 +87,62 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::PoissonClusterRates) = false
-has_global_dispersion(::PoissonClusterRates) = false
-has_cluster_dispersion(::PoissonClusterRates) = false
-has_cluster_means(::PoissonClusterRates) = false
-has_cluster_rates(::PoissonClusterRates) = true
 is_marginalised(::PoissonClusterRates) = false
+
+# ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::PoissonClusterRatesState) = (λ = state.λ_dict,)
+copy_cluster_param_dicts(state::PoissonClusterRatesState) = (λ = copy(state.λ_dict),)
+
+function make_candidate_state(::PoissonClusterRates, state::PoissonClusterRatesState,
+                              c_can::Vector{Int}, params_can::NamedTuple)
+    PoissonClusterRatesState(c_can, params_can.λ)
+end
+
+function commit_params!(state::PoissonClusterRatesState, params_can::NamedTuple)
+    empty!(state.λ_dict); merge!(state.λ_dict, params_can.λ)
+end
+
+# --- PriorProposal (samples from conjugate posterior) ---
+function sample_birth_params(::PoissonClusterRates, ::PriorProposal,
+                             S_i::Vector{Int}, state::PoissonClusterRatesState,
+                             data::CountData, priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    Q = Gamma(priors.λ_a + S_k, 1/(priors.λ_b + n_k))
+    λ_new = rand(Q)
+    return (λ = λ_new,), logpdf(Q, λ_new)
+end
+
+function birth_params_logpdf(::PoissonClusterRates, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonClusterRatesState, data::CountData,
+                             priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    Q = Gamma(priors.λ_a + S_k, 1/(priors.λ_b + n_k))
+    return logpdf(Q, params_old.λ)
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::PoissonClusterRates, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::PoissonClusterRatesState,
+                             data::CountData, priors::PoissonClusterRatesPriors)
+    Q = prop.dists[1]
+    λ_new = rand(Q)
+    return (λ = λ_new,), logpdf(Q, λ_new)
+end
+
+function birth_params_logpdf(::PoissonClusterRates, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonClusterRatesState, data::CountData,
+                             priors::PoissonClusterRatesPriors)
+    return logpdf(prop.dists[1], params_old.λ)
+end
 
 # ============================================================================
 # Table Contribution
@@ -177,8 +227,8 @@ end
 """
     update_params!(model::PoissonClusterRates, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters (cluster rates) and customer assignments.
-Returns diagnostics information for assignment updates.
+Update cluster rates via conjugate Gibbs sampling.
+Assignment updates are handled separately by `update_c!`.
 """
 function update_params!(
     model::PoissonClusterRates,
@@ -189,25 +239,7 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
-    # Update cluster rates (always inferred via conjugacy)
     update_cluster_rates!(model, state, data, priors, tables)
-
-    # Update customer assignments (this is an unmarginalised model, so uses RJMCMC)
-    if should_infer(opts, :c)
-        assignment_method = determine_assignment_method(model, opts)
-        if assignment_method == :rjmcmc
-            for i in 1:nobs(data)
-                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
-                push!(diagnostics, (move_type, i, j_star, accepted))
-            end
-        else
-            error("PoissonClusterRates is unmarginalised and requires RJMCMC for assignment updates")
-        end
-    end
-
-    return diagnostics
 end
 
 # ============================================================================
