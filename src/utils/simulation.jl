@@ -149,3 +149,124 @@ function simulate_binomial_data(n::Int, N::Union{Int, Vector{Int}}, cluster_prob
 
     return (y=y, p=p, c=c, tables=tables, N=N_vec, x=x, D=D)
 end
+
+"""
+    simulate_skewnormal_data(n, cluster_ξ, cluster_ω, cluster_α; α=0.1, scale=1.0)
+
+Simulate Skew Normal data with DDCRP clustering.
+
+# Arguments
+- `n`: Number of observations
+- `cluster_ξ`: True cluster location parameters
+- `cluster_ω`: True cluster scale parameters
+- `cluster_α`: True cluster shape parameters
+
+# Returns
+Named tuple with:
+- `y`: Observed continuous values
+- `ξ`: Location per observation
+- `ω`: Scale per observation
+- `α_shape`: Shape per observation (named α_shape to avoid conflict with DDCRP α)
+- `c`: Customer assignments
+- `tables`: Table structure
+- `x`: Covariate (used to construct distance)
+- `D`: Distance matrix
+"""
+function simulate_skewnormal_data(n::Int,
+                                   cluster_ξ::Vector{Float64},
+                                   cluster_ω::Vector{Float64},
+                                   cluster_α::Vector{Float64};
+                                   α::Float64=0.1, scale::Float64=1.0)
+    x = rand(n)
+    D = construct_distance_matrix(x)
+
+    c = simulate_ddcrp(D; α=α, scale=scale)
+    tables = table_vector(c)
+    n_clusters = length(tables)
+
+    # Assign cluster parameters (recycle if fewer provided than clusters)
+    ξ_clusters = [cluster_ξ[mod1(k, length(cluster_ξ))] for k in 1:n_clusters]
+    ω_clusters = [cluster_ω[mod1(k, length(cluster_ω))] for k in 1:n_clusters]
+    α_clusters = [cluster_α[mod1(k, length(cluster_α))] for k in 1:n_clusters]
+
+    # Assign parameters to each observation
+    ξ = zeros(n)
+    ω = zeros(n)
+    α_shape = zeros(n)
+
+    for (k, table) in enumerate(tables)
+        for i in table
+            ξ[i] = ξ_clusters[k]
+            ω[i] = ω_clusters[k]
+            α_shape[i] = α_clusters[k]
+        end
+    end
+
+    # Simulate observations using stochastic representation
+    # y = ξ + ω × (δ × |z| + √(1-δ²) × ε)
+    y = zeros(n)
+    for i in 1:n
+        δ = α_shape[i] / sqrt(1 + α_shape[i]^2)
+        τ = 1 - δ^2
+        z = abs(randn())  # Half-normal
+        ε = randn()       # Standard normal
+        y[i] = ξ[i] + ω[i] * (δ * z + sqrt(τ) * ε)
+    end
+
+    return (y=y, ξ=ξ, ω=ω, α_shape=α_shape, c=c, tables=tables, x=x, D=D)
+end
+
+"""
+    simulate_gamma_data(n, cluster_shapes, cluster_rates; α=0.1, scale=1.0)
+
+Simulate Gamma data with DDCRP clustering.
+
+# Arguments
+- `n`: Number of observations
+- `cluster_shapes`: True cluster shape parameters (α_k)
+- `cluster_rates`: True cluster rate parameters (β_k)
+- `α`: DDCRP concentration parameter
+- `scale`: DDCRP distance scale
+
+# Returns
+Named tuple with:
+- `y`: Observed positive continuous values
+- `α_shape`: Shape per observation (named α_shape to avoid conflict with DDCRP α)
+- `β`: Rate per observation
+- `c`: Customer assignments
+- `tables`: Table structure
+- `x`: Covariate (used to construct distance)
+- `D`: Distance matrix
+"""
+function simulate_gamma_data(n::Int,
+                              cluster_shapes::Vector{Float64},
+                              cluster_rates::Vector{Float64};
+                              α::Float64=0.1, scale::Float64=1.0)
+    x = rand(n)
+    D = construct_distance_matrix(x)
+
+    c = simulate_ddcrp(D; α=α, scale=scale)
+    tables = table_vector(c)
+    n_clusters = length(tables)
+
+    # Assign cluster parameters (recycle if fewer provided than clusters)
+    α_clusters = [cluster_shapes[mod1(k, length(cluster_shapes))] for k in 1:n_clusters]
+    β_clusters = [cluster_rates[mod1(k, length(cluster_rates))] for k in 1:n_clusters]
+
+    # Assign parameters to each observation
+    α_shape = zeros(n)
+    β = zeros(n)
+
+    for (k, table) in enumerate(tables)
+        for i in table
+            α_shape[i] = α_clusters[k]
+            β[i] = β_clusters[k]
+        end
+    end
+
+    # Simulate observations from Gamma(α, β) where β is rate parameter
+    # Julia's Gamma uses scale=1/β, so Gamma(α, 1/β)
+    y = [rand(Gamma(α_shape[i], 1/β[i])) for i in 1:n]
+
+    return (y=y, α_shape=α_shape, β=β, c=c, tables=tables, x=x, D=D)
+end

@@ -309,7 +309,15 @@ function update_c_rjmcmc!(
 
     if !j_old_in_Si && j_star_in_Si
         # BIRTH
+        if opts.verbose
+            println("Customer ", i, ": Attempting BIRTH move.")
+            println("  S_i: ", S_i, ", table_Si: ", table_Si, ", m_old: ", m_old, ", r_old: ", r_old)
+        end
         r_new, m_new, log_q_forward = sample_proposal(model, opts.prop_distributions[:Q_m], opts.prop_distributions[:Q_r])
+        if opts.verbose
+            println("  Proposed m_new: ", m_new, ", r_new: ", r_new)
+            println("  log_q_forward: ", log_q_forward)
+        end
 
         r_can[sort(S_i)] = r_new
         r_can[sort(table_l)] = state.r_dict[table_Si]
@@ -321,9 +329,16 @@ function update_c_rjmcmc!(
 
         lpr = -log_q_forward
 
-        state_can = NBMeanDispersionClusterRState(c_can, r_can, m_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP) + lpr
+        state_can = NBMeanDispersionClusterRState(c_can, m_can, r_can)
+        logpost_current = posterior(model, data, state, priors, log_DDCRP)
+        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
+        log_α = logpost_candidate - logpost_current + lpr
+        if opts.verbose
+            println("  Log proposal ratio (lpr): ", lpr)
+            println("  Current log-posterior: ", logpost_current)
+            println("  Candidate log-posterior: ", logpost_candidate)
+            println("  Log acceptance ratio (log_α): ", log_α)
+        end
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -331,29 +346,50 @@ function update_c_rjmcmc!(
             merge!(state.r_dict, r_can)
             empty!(state.m_dict)
             merge!(state.m_dict, m_can)
+            if opts.verbose
+                println("  BIRTH move ACCEPTED. Customer ", i, " moved to new table (j_star: ", j_star, ").")
+            end
             return (:birth, j_star, true)
+        end
+        if opts.verbose
+            println("  BIRTH move REJECTED. Customer ", i, " remains at table ", j_old, ".")
         end
         return (:birth, j_star, false)
 
     elseif j_old_in_Si && !j_star_in_Si
         # DEATH
+        if opts.verbose
+            println("Customer ", i, ": Attempting DEATH move.")
+            println("  S_i: ", S_i, ", table_Si (old): ", table_Si, ", j_star (target): ", j_star)
+        end
         table_target = find_table_for_customer(j_star, state.r_dict)
         r_target = state.r_dict[table_target]
         m_target = state.m_dict[table_target]
+        if opts.verbose
+            println("  m_old: ", m_old, ", r_old: ", r_old)
+            println("  m_target: ", m_target, ", r_target: ", r_target)
+        end
 
         r_can[sort(vcat(table_Si, table_target))] = r_target
         m_can[sort(vcat(table_Si, table_target))] = m_target
 
-        lpr = proposal_logpdf(model, opts.prop_distributions[:Q_m], opts.prop_distributions[:Q_r], r_old, m_old)
+        lpr = proposal_logpdf(model, opts.prop_distributions[:Q_m], opts.prop_distributions[:Q_r], m_old, r_old)
 
         delete!(r_can, table_Si)
         delete!(r_can, table_target)
         delete!(m_can, table_Si)
         delete!(m_can, table_target)
 
-        state_can = NBMeanDispersionClusterRState(c_can, r_can, m_can)
-        log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                posterior(model, data, state, priors, log_DDCRP) + lpr
+        state_can = NBMeanDispersionClusterRState(c_can, m_can, r_can)
+        logpost_current = posterior(model, data, state, priors, log_DDCRP)
+        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
+        log_α = logpost_candidate - logpost_current + lpr
+        if opts.verbose
+            println("  Log proposal ratio (lpr): ", lpr)
+            println("  Current log-posterior: ", logpost_current)
+            println("  Candidate log-posterior: ", logpost_candidate)
+            println("  Log acceptance ratio (log_α): ", log_α)
+        end
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -361,44 +397,86 @@ function update_c_rjmcmc!(
             merge!(state.r_dict, r_can)
             empty!(state.m_dict)
             merge!(state.m_dict, m_can)
+            if opts.verbose
+                println("  DEATH move ACCEPTED. Customer ", i, " moved from table ", j_old, " to table ", j_star, " (merged).")
+            end
             return (:death, j_star, true)
+        end
+        if opts.verbose
+            println("  DEATH move REJECTED. Customer ", i, " remains at table ", j_old, ".")
         end
         return (:death, j_star, false)
 
     else
+        print_fixed = false
         # FIXED DIMENSION
+        if opts.verbose && print_fixed
+            println("Customer ", i, ": Attempting FIXED DIMENSION move.")
+            println("  S_i: ", S_i, ", j_old: ", j_old, ", j_star: ", j_star)
+        end
         table_old_target = find_table_for_customer(j_old, state.r_dict)
         table_new_target = find_table_for_customer(j_star, state.r_dict)
 
-        if table_old_target == table_new_target
-            state_can = NBMeanDispersionClusterRState(c_can, state.r_dict, state.m_dict)
+        if opts.verbose && print_fixed
+            println("  table_old_target: ", table_old_target, ", table_new_target: ", table_new_target)
+        end
 
-            log_α = posterior(model, data, state_can, priors, log_DDCRP) -
-                    posterior(model, data, state, priors, log_DDCRP)
+        if table_old_target == table_new_target
+            if opts.verbose && print_fixed
+                println("  (Same table fixed dimension move)")
+            end
+            state_can = NBMeanDispersionClusterRState(c_can, state.m_dict, state.r_dict)
+
+            logpost_current = posterior(model, data, state, priors, log_DDCRP)
+            logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
+            log_α = logpost_candidate - logpost_current
+            if opts.verbose && print_fixed
+                println("  Current log-posterior: ", logpost_current)
+                println("  Candidate log-posterior: ", logpost_candidate)
+                println("  Log acceptance ratio (log_α): ", log_α)
+            end
 
             if log(rand()) < log_α
                 state.c[i] = j_star
+                if opts.verbose && print_fixed
+                    println("  FIXED (same table) move ACCEPTED. Customer ", i, " moved within table ", j_star, ".")
+                end
                 return (:fixed, j_star, true)
+            end
+            if opts.verbose && print_fixed
+                println("  FIXED (same table) move REJECTED. Customer ", i, " remains at table ", j_old, ".")
             end
             return (:fixed, j_star, false)
         end
-
+        if opts.verbose && print_fixed
+            println("  (Different tables fixed dimension move)")
+        end
         new_table_depleted = setdiff(table_old_target, S_i)
         new_table_augmented = sort(vcat(table_new_target, S_i))
 
-        r_depleted, r_augmented, lpr = compute_fixed_dim_means(
-            fixed_dim_mode, S_i, 1.0,
-            table_old_target, state.r_dict[table_old_target],
-            table_new_target, state.r_dict[table_new_target],
-            priors
-        )
-
-        m_depleted, m_augmented, _ = compute_fixed_dim_means(
-            fixed_dim_mode, S_i, 1.0,
+        m_depleted, m_augmented, lpr_m = compute_fixed_dim_means(
+            fixed_dim_mode, S_i, observations(data),
             table_old_target, state.m_dict[table_old_target],
             table_new_target, state.m_dict[table_new_target],
             priors
         )
+        if opts.verbose && print_fixed
+            println("  m_depleted: ", m_depleted, ", m_augmented: ", m_augmented)
+            println("  lpr_m: ", lpr_m)
+        end
+
+        r_depleted = state.r_dict[table_old_target]
+        r_augmented = state.r_dict[table_new_target]
+        lpr_r = 0.0
+        if opts.verbose && print_fixed
+            println("  r_depleted: ", r_depleted, ", r_augmented: ", r_augmented)
+            println("  lpr_r: ", lpr_r)
+        end
+
+        lpr = lpr_m + lpr_r
+        if opts.verbose && print_fixed
+            println("  Total LPR: ", lpr)
+        end
 
         r_can[new_table_depleted] = r_depleted
         r_can[new_table_augmented] = r_augmented
@@ -410,8 +488,15 @@ function update_c_rjmcmc!(
         delete!(m_can, table_new_target)
 
         state_can = NBMeanDispersionClusterRState(c_can, r_can, m_can)
+        logpost_current = posterior(model, data, state, priors, log_DDCRP)
+        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
         log_α = posterior(model, data, state_can, priors, log_DDCRP) -
                 posterior(model, data, state, priors, log_DDCRP) + lpr
+        if opts.verbose && print_fixed
+            println("  Current log-posterior: ", logpost_current)
+            println("  Candidate log-posterior: ", logpost_candidate)
+            println("  Log acceptance ratio (log_α): ", log_α)
+        end
 
         if log(rand()) < log_α
             state.c[i] = j_star
@@ -419,12 +504,17 @@ function update_c_rjmcmc!(
             merge!(state.r_dict, r_can)
             empty!(state.m_dict)
             merge!(state.m_dict, m_can)
+            if opts.verbose && print_fixed
+                println("  FIXED (different tables) move ACCEPTED. Customer ", i, " moved from table ", j_old, " to table ", j_star, ".")
+            end
             return (:fixed, j_star, true)
+        end
+        if opts.verbose && print_fixed
+            println("  FIXED (different tables) move REJECTED. Customer ", i, " remains at table ", j_old, ".")
         end
         return (:fixed, j_star, false)
     end
 end
-
 """
     update_params!(model::NBMeanDispersionClusterR, state, data, priors, tables, log_DDCRP, opts)
 

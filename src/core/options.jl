@@ -30,6 +30,7 @@ struct MCMCOptions
     fixed_dim_mode::Symbol
     track_diagnostics::Bool
     track_pairwise::Bool
+    prop_distributions::Dict{Symbol, UnivariateDistribution}
 end
 
 # Default constructor
@@ -41,21 +42,32 @@ function MCMCOptions(;
         :r => true,
         :m => true,
         :p => true,
-        :c => true
+        :c => true,
+        :ξ => true,
+        :ω => true,
+        :α => true,
+        :h => true
     ),
     prop_sds::Dict{Symbol, Float64} = Dict{Symbol, Float64}(
         :λ => 0.5,
         :r => 0.5,
         :m => 0.5,
-        :p => 0.5
+        :p => 0.5,
+        :ω => 0.3,
+        :α => 0.5
     ),
     assignment_method::Symbol = :auto,
     birth_proposal::Union{Symbol, UnivariateDistribution} = :prior,
-    birth_proposal_params::Dict{Symbol, Any} = Dict{Symbol, Any}(),
+    birth_proposal_params::AbstractDict{Symbol} = Dict{Symbol, Any}(),
     fixed_dim_mode::Symbol = :none,
     track_diagnostics::Bool = true,
-    track_pairwise::Bool = false
+    track_pairwise::Bool = false,
+    prop_distributions::AbstractDict{Symbol, <:UnivariateDistribution} = Dict{Symbol, UnivariateDistribution}()
 )
+    # Convert to Dict{Symbol, Any} to ensure type compatibility
+    bp_params = Dict{Symbol, Any}(k => v for (k, v) in birth_proposal_params)
+    prop_dists = Dict{Symbol, UnivariateDistribution}(k => v for (k, v) in prop_distributions)
+
     return MCMCOptions(
         n_samples,
         verbose,
@@ -63,10 +75,11 @@ function MCMCOptions(;
         prop_sds,
         assignment_method,
         birth_proposal,
-        birth_proposal_params,
+        bp_params,
         fixed_dim_mode,
         track_diagnostics,
-        track_pairwise
+        track_pairwise,
+        prop_dists
     )
 end
 
@@ -88,6 +101,13 @@ get_prop_sd(opts::MCMCOptions, param::Symbol; default=0.5) = get(opts.prop_sds, 
     build_birth_proposal(opts::MCMCOptions) -> BirthProposal
 
 Construct a BirthProposal from MCMCOptions settings.
+
+Available birth_proposal types:
+- `:prior` - Sample from prior distribution
+- `:normal_mean` - Truncated Normal centered at empirical mean
+- `:moment_matched` - InverseGamma fitted via method of moments
+- `:lognormal` - LogNormal centered at empirical log-mean
+- `:moment_matched_lognormal` - LogNormal centered at method-of-moments estimate (for Gamma shape)
 """
 function build_birth_proposal(opts::MCMCOptions)
     bp_type = opts.birth_proposal
@@ -106,6 +126,10 @@ function build_birth_proposal(opts::MCMCOptions)
         σ_mode = get(params, :σ_mode, :empirical)
         σ_fixed = get(params, :σ_fixed, 1.0)
         return LogNormalProposal(σ_mode, σ_fixed)
+    elseif bp_type == :moment_matched_lognormal
+        σ_fixed = get(params, :σ_fixed, 0.5)
+        min_size = get(params, :min_size, 2)
+        return MomentMatchedLogNormalProposal(σ_fixed, min_size)
     elseif bp_type isa UnivariateDistribution
         return bp_type
     else

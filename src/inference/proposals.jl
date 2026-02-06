@@ -35,6 +35,36 @@ function fit_inverse_gamma_moments(data)
 end
 
 """
+    fit_gamma_shape_moments(data) -> Float64 or nothing
+
+Estimate Gamma shape parameter α via method of moments.
+For X ~ Gamma(α, β):
+  E[X] = α/β
+  Var[X] = α/β²
+
+Therefore: α = E[X]²/Var[X] = μ²/σ²
+
+Returns nothing if fitting fails (insufficient data, zero/negative variance).
+"""
+function fit_gamma_shape_moments(data)
+    n = length(data)
+    n < 2 && return nothing
+
+    μ = mean(data)
+    σ² = var(data; corrected=false)
+
+    (σ² <= 0 || μ <= 0) && return nothing
+
+    # Method of moments: α = μ²/σ²
+    α_est = μ^2 / σ²
+
+    # Ensure valid (positive) shape parameter
+    α_est <= 0 && return nothing
+
+    return α_est
+end
+
+"""
     compute_proposal_σ(prop::NormalMeanProposal, S_i, λ)
 
 Compute the standard deviation for NormalMeanProposal based on the mode.
@@ -217,6 +247,90 @@ function proposal_logpdf(prop::LogNormalProposal, m, S_i, λ, priors)
 end
 
 
+
+# ============================================================================
+# MomentMatchedLogNormalProposal - LogNormal centered at method-of-moments estimate
+# ============================================================================
+
+"""
+    sample_proposal(prop::MomentMatchedLogNormalProposal, S_i, y, priors) -> (α_new, log_q)
+
+Sample from LogNormal centered at method-of-moments estimate for Gamma shape.
+For Gamma(α, β): α_est = μ²/σ² where μ, σ² are sample mean/variance.
+Falls back to prior mean if moment estimation fails.
+"""
+function sample_proposal(prop::MomentMatchedLogNormalProposal, S_i, y, priors)
+    data = view(y, S_i)
+
+    # Try moment-matched estimate
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(data)
+    end
+
+    # Fallback: use prior mean (for Gamma(a, b) prior, mean = a/b)
+    if isnothing(α_est)
+        if hasproperty(priors, :α_a) && hasproperty(priors, :α_b)
+            α_est = priors.α_a / priors.α_b
+        else
+            α_est = 1.0  # Default fallback
+        end
+    end
+
+    # Ensure α_est is positive and bounded away from zero
+    α_est = max(α_est, 0.01)
+
+    # Sample from LogNormal: log(α) ~ Normal(log(α_est), σ)
+    log_α_est = log(α_est)
+    log_α_new = rand(Normal(log_α_est, prop.σ_fixed))
+    α_new = exp(log_α_new)
+
+    # Log density of LogNormal: logpdf(Normal, log(x)) - log(x)
+    log_q = logpdf(Normal(log_α_est, prop.σ_fixed), log_α_new) - log_α_new
+
+    return α_new, log_q
+end
+
+"""
+    proposal_logpdf(prop::MomentMatchedLogNormalProposal, α, S_i, y, priors) -> Float64
+
+Evaluate LogNormal proposal density at α.
+"""
+function proposal_logpdf(prop::MomentMatchedLogNormalProposal, α, S_i, y, priors)
+    # α must be positive for LogNormal
+    if α <= 0
+        return -Inf
+    end
+
+    data = view(y, S_i)
+
+    # Try moment-matched estimate
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(data)
+    end
+
+    # Fallback: use prior mean
+    if isnothing(α_est)
+        if hasproperty(priors, :α_a) && hasproperty(priors, :α_b)
+            α_est = priors.α_a / priors.α_b
+        else
+            α_est = 1.0
+        end
+    end
+
+    α_est = max(α_est, 0.01)
+
+    log_α_est = log(α_est)
+    log_α = log(α)
+
+    # LogNormal density
+    return logpdf(Normal(log_α_est, prop.σ_fixed), log_α) - log_α
+end
+
+# ============================================================================
+# Generic UnivariateDistribution fallback
+# ============================================================================
 
 function sample_proposal(Q::UnivariateDistribution, S_i, λ, priors)
     m_new = rand(Q)

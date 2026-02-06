@@ -34,6 +34,22 @@ Concrete subtypes: `BinomialClusterProb`, `BinomialClusterProbMarg`
 """
 abstract type BinomialModel <: LikelihoodModel end
 
+"""
+    SkewNormalModel <: LikelihoodModel
+
+Abstract type for Skew Normal likelihood models.
+Concrete subtypes: `SkewNormalCluster`
+"""
+abstract type SkewNormalModel <: LikelihoodModel end
+
+"""
+    GammaModel <: LikelihoodModel
+
+Abstract type for Gamma likelihood models.
+Concrete subtypes: `GammaClusterShapeMarg`
+"""
+abstract type GammaModel <: LikelihoodModel end
+
 # ============================================================================
 # Abstract Types for State, Priors, and Samples
 # ============================================================================
@@ -128,6 +144,24 @@ end
 LogNormalProposal() = LogNormalProposal(:empirical, 1.0)
 LogNormalProposal(σ::Float64) = LogNormalProposal(:fixed, σ)
 
+"""
+    MomentMatchedLogNormalProposal <: BirthProposal
+
+Sample from LogNormal centered at method-of-moments estimate.
+For Gamma shape parameter α: α_est = μ²/σ² where μ, σ² are sample mean/variance.
+Proposes log(α) ~ Normal(log(α_est), σ), guaranteeing positivity.
+
+# Fields
+- `σ_fixed::Float64`: Standard deviation on log-scale (default: 0.5)
+- `min_size::Int`: Minimum cluster size for moment estimation (default: 2)
+"""
+struct MomentMatchedLogNormalProposal <: BirthProposal
+    σ_fixed::Float64
+    min_size::Int
+end
+MomentMatchedLogNormalProposal() = MomentMatchedLogNormalProposal(0.5, 2)
+MomentMatchedLogNormalProposal(σ::Float64) = MomentMatchedLogNormalProposal(σ, 2)
+
 
 # ============================================================================
 # Model Trait Functions (to be implemented by each model variant)
@@ -183,6 +217,34 @@ Marginalised models use Gibbs sampling for customer assignments.
 """
 is_marginalised(::LikelihoodModel) = false
 
+"""
+    has_latent_augmentation(model::LikelihoodModel) -> Bool
+
+Returns true if the model uses latent augmentation variables (e.g., h_i for Skew Normal).
+"""
+has_latent_augmentation(::LikelihoodModel) = false
+
+"""
+    has_cluster_location(model::LikelihoodModel) -> Bool
+
+Returns true if the model has cluster-specific location parameters (ξ_k).
+"""
+has_cluster_location(::LikelihoodModel) = false
+
+"""
+    has_cluster_scale(model::LikelihoodModel) -> Bool
+
+Returns true if the model has cluster-specific scale parameters (ω_k).
+"""
+has_cluster_scale(::LikelihoodModel) = false
+
+"""
+    has_cluster_shape(model::LikelihoodModel) -> Bool
+
+Returns true if the model has cluster-specific shape parameters (α_k).
+"""
+has_cluster_shape(::LikelihoodModel) = false
+
 # ============================================================================
 # Observed Data Types
 # ============================================================================
@@ -222,6 +284,20 @@ Observed count data with number of trials for Binomial models.
 struct CountDataWithTrials{Ty<:AbstractVector, Tn<:Union{Int, <:AbstractVector{Int}}, Td<:AbstractMatrix} <: AbstractObservedData
     y::Ty
     N::Tn
+    D::Td
+end
+
+"""
+    ContinuousData{Ty, Td} <: AbstractObservedData
+
+Observed continuous data for models like Skew Normal.
+
+# Fields
+- `y::Ty`: Observed values (AbstractVector{<:Real})
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct ContinuousData{Ty<:AbstractVector{<:Real}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
     D::Td
 end
 

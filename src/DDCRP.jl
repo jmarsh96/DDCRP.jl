@@ -45,6 +45,19 @@ export PoissonPopulationRates, PoissonPopulationRatesState, PoissonPopulationRat
 export BinomialClusterProb, BinomialClusterProbState, BinomialClusterProbPriors, BinomialClusterProbSamples
 export BinomialClusterProbMarg, BinomialClusterProbMargState, BinomialClusterProbMargPriors, BinomialClusterProbMargSamples
 
+# Skew Normal model variants
+export SkewNormalModel, SkewNormalCluster
+export SkewNormalClusterState, SkewNormalClusterPriors, SkewNormalClusterSamples
+
+# Gamma model variants
+export GammaModel, GammaClusterShapeMarg
+export GammaClusterShapeMargState, GammaClusterShapeMargPriors, GammaClusterShapeMargSamples
+export ContinuousData
+export has_latent_augmentation, has_cluster_location, has_cluster_scale, has_cluster_shape
+export skewnormal_logpdf, delta_from_alpha, sample_h_conditional
+export estimate_skewness, alpha_from_skewness, estimate_skewnormal_params
+export update_h!, update_ξ!, update_ω!, update_α!
+
 # DDCRP parameters
 export DDCRPParams
 
@@ -70,6 +83,7 @@ export acceptance_rates, pairwise_acceptance_rates
 export effective_sample_size, integrated_autocorrelation_time, ess_per_second
 export autocorrelation, summarize_mcmc
 export record_move!, record_pairwise!, finalize!
+export get_parameter_fields, compute_param_summary
 
 # Core DDCRP utilities
 export construct_distance_matrix, decay
@@ -88,7 +102,8 @@ export likelihood_contribution, negbin_logpdf, logbinomial
 
 # Simulation utilities
 export simulate_m, simulate_λ
-export simulate_negbin_data, simulate_poisson_data, simulate_binomial_data
+export simulate_negbin_data, simulate_poisson_data, simulate_binomial_data, simulate_skewnormal_data
+export simulate_gamma_data
 
 # Analysis utilities
 export calculate_n_clusters, posterior_num_cluster_distribution
@@ -135,6 +150,13 @@ include("models/poisson/poisson_population_rates.jl")
 include("models/binomial/binomial_utils.jl")
 include("models/binomial/binomial_cluster_prob.jl")
 include("models/binomial/binomial_cluster_prob_marg.jl")
+
+# Model implementations - Skew Normal variants
+include("models/skew_normal/skew_normal_utils.jl")
+include("models/skew_normal/skew_normal_cluster.jl")
+
+# Model implementations - Gamma variants
+include("models/gamma/gamma_cluster_shape_marg.jl")
 
 # Samplers (depends on model types for specialized methods)
 include("samplers/gibbs.jl")
