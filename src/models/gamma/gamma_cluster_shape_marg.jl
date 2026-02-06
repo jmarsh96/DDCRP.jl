@@ -121,8 +121,7 @@ end
 cluster_param_dicts(state::GammaClusterShapeMargState) = (α = state.α_dict,)
 copy_cluster_param_dicts(state::GammaClusterShapeMargState) = (α = copy(state.α_dict),)
 
-function make_candidate_state(::GammaClusterShapeMarg, state::GammaClusterShapeMargState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
+function make_candidate_state(::GammaClusterShapeMarg, state::GammaClusterShapeMargState, c_can::Vector{Int}, params_can::NamedTuple)
     GammaClusterShapeMargState(c_can, params_can.α)
 end
 
@@ -131,25 +130,18 @@ function commit_params!(state::GammaClusterShapeMargState, params_can::NamedTupl
 end
 
 # --- PriorProposal ---
-function sample_birth_params(::GammaClusterShapeMarg, ::PriorProposal,
-                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
-                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+function sample_birth_params(::GammaClusterShapeMarg, ::PriorProposal, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     Q = Gamma(priors.α_a, 1/priors.α_b)
     α_new = rand(Q)
     return (α = α_new,), logpdf(Q, α_new)
 end
 
-function birth_params_logpdf(::GammaClusterShapeMarg, ::PriorProposal,
-                             params_old::NamedTuple, S_i::Vector{Int},
-                             state::GammaClusterShapeMargState, data::ContinuousData,
-                             priors::GammaClusterShapeMargPriors)
+function birth_params_logpdf(::GammaClusterShapeMarg, ::PriorProposal, params_old::NamedTuple, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     return logpdf(Gamma(priors.α_a, 1/priors.α_b), params_old.α)
 end
 
 # --- NormalMomentMatch ---
-function sample_birth_params(::GammaClusterShapeMarg, prop::NormalMomentMatch,
-                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
-                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+function sample_birth_params(::GammaClusterShapeMarg, prop::NormalMomentMatch, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     y = observations(data)
     α_est = fit_gamma_shape_moments(view(y, S_i))
     if isnothing(α_est)
@@ -160,10 +152,7 @@ function sample_birth_params(::GammaClusterShapeMarg, prop::NormalMomentMatch,
     return (α = α_new,), logpdf(Q, α_new)
 end
 
-function birth_params_logpdf(::GammaClusterShapeMarg, prop::NormalMomentMatch,
-                             params_old::NamedTuple, S_i::Vector{Int},
-                             state::GammaClusterShapeMargState, data::ContinuousData,
-                             priors::GammaClusterShapeMargPriors)
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::NormalMomentMatch, params_old::NamedTuple, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     y = observations(data)
     α_est = fit_gamma_shape_moments(view(y, S_i))
     if isnothing(α_est)
@@ -174,23 +163,16 @@ function birth_params_logpdf(::GammaClusterShapeMarg, prop::NormalMomentMatch,
 end
 
 # --- InverseGammaMomentMatch (fallback to prior for shape params) ---
-function sample_birth_params(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch,
-                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
-                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+function sample_birth_params(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     return sample_birth_params(GammaClusterShapeMarg(), PriorProposal(), S_i, state, data, priors)
 end
 
-function birth_params_logpdf(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch,
-                             params_old::NamedTuple, S_i::Vector{Int},
-                             state::GammaClusterShapeMargState, data::ContinuousData,
-                             priors::GammaClusterShapeMargPriors)
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::InverseGammaMomentMatch, params_old::NamedTuple, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)    
     return birth_params_logpdf(GammaClusterShapeMarg(), PriorProposal(), params_old, S_i, state, data, priors)
 end
 
 # --- LogNormalMomentMatch ---
-function sample_birth_params(::GammaClusterShapeMarg, prop::LogNormalMomentMatch,
-                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
-                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+function sample_birth_params(::GammaClusterShapeMarg, prop::LogNormalMomentMatch, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     y = observations(data)
     α_est = nothing
     if length(S_i) >= prop.min_size
@@ -207,10 +189,7 @@ function sample_birth_params(::GammaClusterShapeMarg, prop::LogNormalMomentMatch
     return (α = α_new,), log_q
 end
 
-function birth_params_logpdf(::GammaClusterShapeMarg, prop::LogNormalMomentMatch,
-                             params_old::NamedTuple, S_i::Vector{Int},
-                             state::GammaClusterShapeMargState, data::ContinuousData,
-                             priors::GammaClusterShapeMargPriors)
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::LogNormalMomentMatch, params_old::NamedTuple, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     if params_old.α <= 0
         return -Inf
     end
@@ -229,18 +208,13 @@ function birth_params_logpdf(::GammaClusterShapeMarg, prop::LogNormalMomentMatch
 end
 
 # --- FixedDistributionProposal ---
-function sample_birth_params(::GammaClusterShapeMarg, prop::FixedDistributionProposal,
-                             S_i::Vector{Int}, state::GammaClusterShapeMargState,
-                             data::ContinuousData, priors::GammaClusterShapeMargPriors)
+function sample_birth_params(::GammaClusterShapeMarg, prop::FixedDistributionProposal, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     Q = prop.dists[1]
     α_new = rand(Q)
     return (α = α_new,), logpdf(Q, α_new)
 end
 
-function birth_params_logpdf(::GammaClusterShapeMarg, prop::FixedDistributionProposal,
-                             params_old::NamedTuple, S_i::Vector{Int},
-                             state::GammaClusterShapeMargState, data::ContinuousData,
-                             priors::GammaClusterShapeMargPriors)
+function birth_params_logpdf(::GammaClusterShapeMarg, prop::FixedDistributionProposal, params_old::NamedTuple, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
     return logpdf(prop.dists[1], params_old.α)
 end
 
