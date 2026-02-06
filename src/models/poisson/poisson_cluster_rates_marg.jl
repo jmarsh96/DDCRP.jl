@@ -79,11 +79,6 @@ struct PoissonClusterRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
-
-is_marginalised(::PoissonClusterRatesMarg) = true
 
 # ============================================================================
 # Table Contribution

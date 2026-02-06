@@ -176,18 +176,6 @@ FixedDistributionProposal(d::UnivariateDistribution) = FixedDistributionProposal
 
 
 # ============================================================================
-# Model Trait Functions
-# ============================================================================
-
-"""
-    is_marginalised(model::LikelihoodModel) -> Bool
-
-Returns true if cluster parameters are integrated out analytically.
-Marginalised models use Gibbs sampling for customer assignments.
-"""
-is_marginalised(::LikelihoodModel) = false
-
-# ============================================================================
 # Observed Data Types
 # ============================================================================
 

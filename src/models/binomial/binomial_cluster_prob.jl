@@ -83,11 +83,6 @@ struct BinomialClusterProbSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
-
-is_marginalised(::BinomialClusterProb) = false
 
 # ============================================================================
 # RJMCMC Interface

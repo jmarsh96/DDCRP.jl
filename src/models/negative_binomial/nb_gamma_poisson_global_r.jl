@@ -99,11 +99,7 @@ struct NBGammaPoissonGlobalRSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
 
-is_marginalised(::NBGammaPoissonGlobalR) = false
 
 # ============================================================================
 # RJMCMC Interface

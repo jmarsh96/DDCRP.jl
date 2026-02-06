@@ -74,9 +74,6 @@ export update_params!, update_cluster_rates!, update_cluster_probs!
 export update_c!
 export initialise_state, extract_samples!, allocate_samples
 
-# Trait functions
-export is_marginalised
-
 # RJMCMC interface methods
 export cluster_param_dicts, copy_cluster_param_dicts
 export make_candidate_state, commit_params!

@@ -98,11 +98,6 @@ struct NBMeanDispersionClusterRSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
-
-is_marginalised(::NBMeanDispersionClusterR) = false
 
 # ============================================================================
 # RJMCMC Interface

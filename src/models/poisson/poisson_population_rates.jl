@@ -90,11 +90,7 @@ struct PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
-# ============================================================================
-# Trait Functions
-# ============================================================================
 
-is_marginalised(::PoissonPopulationRates) = false
 requires_trials(::PoissonPopulationRates) = true  # Requires exposure P
 
 # ============================================================================

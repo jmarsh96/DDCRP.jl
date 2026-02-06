@@ -164,20 +164,6 @@
         @test ddcrp.decay_fn(1.0; scale=10.0) ≈ exp(-10.0)
     end
 
-    @testset "Trait Functions" begin
-        # Marginalised models
-        @test is_marginalised(NBGammaPoissonGlobalRMarg()) == true
-        @test is_marginalised(PoissonClusterRatesMarg()) == true
-        @test is_marginalised(BinomialClusterProbMarg()) == true
-
-        # Unmarginalised models
-        @test is_marginalised(NBGammaPoissonGlobalR()) == false
-        @test is_marginalised(NBGammaPoissonClusterRMarg()) == false
-        @test is_marginalised(PoissonClusterRates()) == false
-        @test is_marginalised(BinomialClusterProb()) == false
-        @test is_marginalised(NBMeanDispersionGlobalR()) == false
-    end
-
     @testset "State Types - NBGammaPoissonGlobalRMarg" begin
         n = 10
         c = collect(1:n)

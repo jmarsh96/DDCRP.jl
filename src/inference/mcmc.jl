@@ -33,7 +33,7 @@ function update_c!(
         return diagnostics
     end
 
-    use_gibbs = is_marginalised(model) || proposal isa ConjugateProposal
+    use_gibbs = proposal isa ConjugateProposal
 
     for i in 1:nobs(data)
         if use_gibbs
