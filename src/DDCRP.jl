@@ -114,6 +114,7 @@ export point_estimate_clustering, posterior_summary
 # Sampler utilities
 export get_moving_set, find_table_for_customer
 export compute_fixed_dim_means, compute_weighted_means, resample_posterior_means
+export update_c_rjmcmc_cached!, save_entries, restore_entries!
 
 # Proposal utilities
 export fit_inverse_gamma_moments, fit_gamma_shape_moments

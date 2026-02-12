@@ -276,3 +276,189 @@ function update_c_rjmcmc!(
         return (:fixed, j_star, false)
     end
 end
+
+# ============================================================================
+# Cached RJMCMC: In-place modification with delta-posterior
+# Eliminates dict/vector copies and computes only affected table contributions
+# ============================================================================
+
+"""
+    update_c_rjmcmc_cached!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+
+Optimized RJMCMC update for customer i's assignment.
+Uses in-place state modification with save/restore instead of copying,
+and delta-posterior computation instead of full posterior evaluation.
+
+Returns (move_type::Symbol, j_star::Int, accepted::Bool)
+"""
+function update_c_rjmcmc_cached!(
+    model::LikelihoodModel,
+    i::Int,
+    state::AbstractMCMCState,
+    data::AbstractObservedData,
+    priors::AbstractPriors,
+    proposal::BirthProposal,
+    log_DDCRP::AbstractMatrix,
+    opts::MCMCOptions
+)
+    n = length(state.c)
+    j_old = state.c[i]
+
+    S_i = get_moving_set(i, state.c)
+    dicts = cluster_param_dicts(state)
+    primary_dict = first(dicts)
+    table_Si = find_table_for_customer(i, primary_dict)
+    table_l = setdiff(table_Si, S_i)
+
+    j_star = rand(1:n)
+
+    j_old_in_Si = j_old in S_i
+    j_star_in_Si = j_star in S_i
+
+    # Delta DDCRP: only c[i] changes, so delta is O(1)
+    ddcrp_delta = log_DDCRP[i, j_star] - log_DDCRP[i, j_old]
+
+    if !j_old_in_Si && j_star_in_Si
+        # ===== BIRTH MOVE =====
+        # Sample birth params before modifying state
+        params_new, log_q_forward = sample_birth_params(model, proposal, S_i, state, data, priors)
+
+        sorted_Si = sort(S_i)
+        sorted_table_l = isempty(table_l) ? Int[] : sort(table_l)
+
+        # Compute old table contribution before modification
+        old_contrib = table_contribution(model, sort(table_Si), state, data, priors)
+
+        # Save affected entries
+        saved = save_entries(dicts, [table_Si])
+        old_table_Si_vals = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+
+        # Modify state in-place
+        state.c[i] = j_star
+        for k in keys(dicts)
+            dicts[k][sorted_Si] = params_new[k]
+            if !isempty(sorted_table_l)
+                dicts[k][sorted_table_l] = old_table_Si_vals[k]
+            end
+            delete!(dicts[k], table_Si)
+        end
+
+        # Compute new table contributions
+        new_contrib = table_contribution(model, sorted_Si, state, data, priors)
+        if !isempty(sorted_table_l)
+            new_contrib += table_contribution(model, sorted_table_l, state, data, priors)
+        end
+
+        lpr = -log_q_forward
+        log_α = (new_contrib - old_contrib) + ddcrp_delta + lpr
+
+        if log(rand()) < log_α
+            return (:birth, j_star, true)
+        else
+            # Restore state
+            state.c[i] = j_old
+            keys_to_delete = isempty(sorted_table_l) ? [sorted_Si] : [sorted_Si, sorted_table_l]
+            restore_entries!(dicts, saved, keys_to_delete)
+            return (:birth, j_star, false)
+        end
+
+    elseif j_old_in_Si && !j_star_in_Si
+        # ===== DEATH MOVE =====
+        table_target = find_table_for_customer(j_star, primary_dict)
+        merged_table = sort(vcat(table_Si, table_target))
+
+        # Reverse proposal density (before modification)
+        params_old = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+        log_q_reverse = birth_params_logpdf(model, proposal, params_old, S_i, state, data, priors)
+        lpr = log_q_reverse
+
+        # Compute old contributions before modification
+        old_contrib = table_contribution(model, sort(table_Si), state, data, priors) +
+                      table_contribution(model, sort(table_target), state, data, priors)
+
+        # Save affected entries
+        saved = save_entries(dicts, [table_Si, table_target])
+        target_vals = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_target] for k in keys(dicts)))
+
+        # Modify state in-place
+        state.c[i] = j_star
+        for k in keys(dicts)
+            dicts[k][merged_table] = target_vals[k]
+            delete!(dicts[k], table_Si)
+            delete!(dicts[k], table_target)
+        end
+
+        # Compute new contribution
+        new_contrib = table_contribution(model, merged_table, state, data, priors)
+
+        log_α = (new_contrib - old_contrib) + ddcrp_delta + lpr
+
+        if log(rand()) < log_α
+            return (:death, j_star, true)
+        else
+            state.c[i] = j_old
+            restore_entries!(dicts, saved, [merged_table])
+            return (:death, j_star, false)
+        end
+
+    else
+        # ===== FIXED DIMENSION MOVE =====
+        table_old_target = find_table_for_customer(j_old, primary_dict)
+        table_new_target = find_table_for_customer(j_star, primary_dict)
+
+        if table_old_target == table_new_target
+            # Same table - only c[i] changes, no table contribution changes
+            log_α = ddcrp_delta
+
+            if log(rand()) < log_α
+                state.c[i] = j_star
+                return (:fixed, j_star, true)
+            end
+            return (:fixed, j_star, false)
+        end
+
+        # Different tables - transfer S_i from old to new table
+        new_table_depleted = setdiff(table_old_target, S_i)
+        new_table_augmented = sort(vcat(table_new_target, S_i))
+
+        # Compute fixed-dim params before modification
+        params_depl, params_aug, lpr = fixed_dim_params(
+            model, S_i, table_old_target, table_new_target, state, data, priors, opts)
+
+        # Compute old contributions before modification
+        old_contrib = table_contribution(model, sort(table_old_target), state, data, priors) +
+                      table_contribution(model, sort(table_new_target), state, data, priors)
+
+        # Save affected entries
+        saved = save_entries(dicts, [table_old_target, table_new_target])
+
+        # Modify state in-place
+        state.c[i] = j_star
+        for k in keys(dicts)
+            if !isempty(new_table_depleted)
+                dicts[k][new_table_depleted] = params_depl[k]
+            end
+            dicts[k][new_table_augmented] = params_aug[k]
+            delete!(dicts[k], table_old_target)
+            delete!(dicts[k], table_new_target)
+        end
+
+        # Compute new contributions
+        new_contrib = table_contribution(model, new_table_augmented, state, data, priors)
+        if !isempty(new_table_depleted)
+            new_contrib += table_contribution(model, new_table_depleted, state, data, priors)
+        end
+
+        log_α = (new_contrib - old_contrib) + ddcrp_delta + lpr
+
+        if log(rand()) < log_α
+            return (:fixed, j_star, true)
+        else
+            state.c[i] = j_old
+            keys_to_delete = isempty(new_table_depleted) ?
+                [new_table_augmented] : [new_table_depleted, new_table_augmented]
+            restore_entries!(dicts, saved, keys_to_delete)
+            return (:fixed, j_star, false)
+        end
+    end
+end

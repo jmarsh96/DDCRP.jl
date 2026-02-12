@@ -333,14 +333,14 @@ function update_α_table!(
     log_α_new = rand(Normal(log_α_old, prop_sd))
     α_new = exp(log_α_new)
 
-    # Create candidate state
-    α_dict_can = copy(state.α_dict)
-    α_dict_can[key] = α_new
-    state_can = GammaClusterShapeMargState(state.c, α_dict_can)
-
-    # Log-posterior ratio
+    # Compute old contribution
     logpost_old = table_contribution(model, table, state, data, priors)
-    logpost_new = table_contribution(model, table, state_can, data, priors)
+
+    # Modify in-place
+    state.α_dict[key] = α_new
+
+    # Compute new contribution (reads from modified state)
+    logpost_new = table_contribution(model, table, state, data, priors)
 
     # Jacobian for log-scale proposal: J = α_new / α_old
     # log|J| = log(α_new) - log(α_old) = log_α_new - log_α_old
@@ -348,8 +348,9 @@ function update_α_table!(
 
     log_accept_ratio = logpost_new - logpost_old + log_jacobian
 
-    if log(rand()) < log_accept_ratio
-        state.α_dict[key] = α_new
+    if log(rand()) >= log_accept_ratio
+        # Reject: restore old value
+        state.α_dict[key] = α_old
     end
 end
 

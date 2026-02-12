@@ -39,7 +39,7 @@ function update_c!(
         if use_gibbs
             move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
         else
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc_cached!(model, i, state, data, priors, proposal, log_DDCRP, opts)
         end
         push!(diagnostics, (move_type, i, j_star, accepted))
     end

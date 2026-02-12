@@ -91,3 +91,42 @@ function fixed_dim_params(model::LikelihoodModel, S_i::Vector{Int},
     params_aug = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_new] for k in keys(dicts)))
     return params_depl, params_aug, 0.0
 end
+
+# ============================================================================
+# Generic Save/Restore Helpers for In-Place RJMCMC
+# ============================================================================
+
+"""
+    save_entries(dicts::NamedTuple, table_keys)
+
+Save current entries for the given table keys from each dict in the NamedTuple.
+Returns a NamedTuple of `Vector{Pair{Vector{Int}, T}}` for each dict.
+"""
+function save_entries(dicts::NamedTuple, table_keys)
+    return NamedTuple{keys(dicts)}(
+        Tuple(
+            [k => dicts[name][k] for k in table_keys if haskey(dicts[name], k)]
+            for name in keys(dicts)
+        )
+    )
+end
+
+"""
+    restore_entries!(dicts::NamedTuple, saved::NamedTuple, keys_to_delete)
+
+Restore dicts to their saved state:
+1. Delete any keys in `keys_to_delete` from all dicts
+2. Re-insert all saved entries
+"""
+function restore_entries!(dicts::NamedTuple, saved::NamedTuple, keys_to_delete)
+    for name in keys(dicts)
+        for k in keys_to_delete
+            if haskey(dicts[name], k)
+                delete!(dicts[name], k)
+            end
+        end
+        for (k, v) in saved[name]
+            dicts[name][k] = v
+        end
+    end
+end
