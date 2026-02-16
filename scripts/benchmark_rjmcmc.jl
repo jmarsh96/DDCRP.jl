@@ -111,4 +111,11 @@ println("Memory: $(b_full_orig.memory) bytes -> $(b_full_cached.memory) bytes")
 
 
 
-@code_typed DDCRP.update_c_rjmcmc!(model, 1, state_base, data, priors, proposal, log_DDCRP, opts)
+@code_warntype DDCRP.update_c_rjmcmc_cached!(model, 1, state_base, data, priors, proposal, log_DDCRP, opts)
+
+
+
+using JET
+opt_rep = @report_opt DDCRP.update_c_rjmcmc!(model, 1, state_base, data, priors, proposal, log_DDCRP, opts)
+
+println(opt_rep)

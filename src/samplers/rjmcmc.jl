@@ -29,7 +29,7 @@ function find_table_for_customer(j, param_dict)
             return table
         end
     end
-    return nothing
+    error("Customer $j not found in any table")
 end
 
 # ============================================================================
@@ -215,7 +215,7 @@ function update_c_rjmcmc!(
         end
 
         # Old params for the moving set (for reverse proposal density)
-        params_old = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+        params_old = map(d -> d[table_Si], dicts)
         log_q_reverse = birth_params_logpdf(model, proposal, params_old, S_i, state, data, priors)
         lpr = log_q_reverse
 
@@ -331,7 +331,7 @@ function update_c_rjmcmc_cached!(
 
         # Save affected entries
         saved = save_entries(dicts, [table_Si])
-        old_table_Si_vals = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+        old_table_Si_vals = map(d -> d[table_Si], dicts)
 
         # Modify state in-place
         state.c[i] = j_star
@@ -368,7 +368,7 @@ function update_c_rjmcmc_cached!(
         merged_table = sort(vcat(table_Si, table_target))
 
         # Reverse proposal density (before modification)
-        params_old = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_Si] for k in keys(dicts)))
+        params_old = map(d -> d[table_Si], dicts)
         log_q_reverse = birth_params_logpdf(model, proposal, params_old, S_i, state, data, priors)
         lpr = log_q_reverse
 
@@ -378,7 +378,7 @@ function update_c_rjmcmc_cached!(
 
         # Save affected entries
         saved = save_entries(dicts, [table_Si, table_target])
-        target_vals = NamedTuple{keys(dicts)}(Tuple(dicts[k][table_target] for k in keys(dicts)))
+        target_vals = map(d -> d[table_target], dicts)
 
         # Modify state in-place
         state.c[i] = j_star
