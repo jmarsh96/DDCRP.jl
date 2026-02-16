@@ -30,7 +30,7 @@ Parameters:
 - r_k: Cluster-specific dispersion parameters
 """
 struct NBGammaPoissonClusterRMarg <: NegativeBinomialModel end
-
+NBGammaPoissonClusterRMargState
 # ============================================================================
 # State Type
 # ============================================================================
@@ -100,16 +100,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::NBGammaPoissonClusterRMargState) = (r = state.r_dict,)
-copy_cluster_param_dicts(state::NBGammaPoissonClusterRMargState) = (r = copy(state.r_dict),)
-
-function make_candidate_state(::NBGammaPoissonClusterRMarg, state::NBGammaPoissonClusterRMargState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
-    NBGammaPoissonClusterRMargState(c_can, state.λ, params_can.r)
-end
-
-function commit_params!(state::NBGammaPoissonClusterRMargState, params_can::NamedTuple)
-    empty!(state.r_dict); merge!(state.r_dict, params_can.r)
-end
 
 # --- PriorProposal ---
 function sample_birth_params(::NBGammaPoissonClusterRMarg, ::PriorProposal,

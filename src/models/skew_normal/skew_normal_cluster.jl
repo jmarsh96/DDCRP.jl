@@ -129,18 +129,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::SkewNormalClusterState) = (ξ = state.ξ_dict, ω = state.ω_dict, α = state.α_dict)
-copy_cluster_param_dicts(state::SkewNormalClusterState) = (ξ = copy(state.ξ_dict), ω = copy(state.ω_dict), α = copy(state.α_dict))
-
-function make_candidate_state(::SkewNormalCluster, state::SkewNormalClusterState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
-    SkewNormalClusterState(c_can, state.h, params_can.ξ, params_can.ω, params_can.α)
-end
-
-function commit_params!(state::SkewNormalClusterState, params_can::NamedTuple)
-    empty!(state.ξ_dict); merge!(state.ξ_dict, params_can.ξ)
-    empty!(state.ω_dict); merge!(state.ω_dict, params_can.ω)
-    empty!(state.α_dict); merge!(state.α_dict, params_can.α)
-end
 
 # --- PriorProposal ---
 function sample_birth_params(::SkewNormalCluster, ::PriorProposal,

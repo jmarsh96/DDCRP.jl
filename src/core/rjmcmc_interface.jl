@@ -17,31 +17,6 @@ Each model returns its specific set of dicts, e.g.:
 """
 function cluster_param_dicts end
 
-"""
-    copy_cluster_param_dicts(state::AbstractMCMCState) -> NamedTuple
-
-Return shallow copies of all cluster parameter dicts.
-Same keys as `cluster_param_dicts`.
-"""
-function copy_cluster_param_dicts end
-
-"""
-    make_candidate_state(model::LikelihoodModel, state::AbstractMCMCState,
-                         c_can::Vector{Int}, params_can::NamedTuple)
-
-Construct a candidate state from a candidate assignment vector and
-candidate cluster parameter dicts. Non-dict fields (e.g., global r,
-observation-level λ, latent h) are copied from the current state.
-"""
-function make_candidate_state end
-
-"""
-    commit_params!(state::AbstractMCMCState, params_can::NamedTuple)
-
-Apply accepted candidate parameters to the current state.
-For each dict: `empty!(state_dict); merge!(state_dict, can_dict)`.
-"""
-function commit_params! end
 
 """
     sample_birth_params(model::LikelihoodModel, proposal::BirthProposal,
@@ -124,4 +99,67 @@ function restore_entries!(dicts::NamedTuple, saved::NamedTuple, keys_to_delete)
             dicts[name][k] = v
         end
     end
+end
+
+# ============================================================================
+# Sorted Vector Utilities (allocation-free alternatives to setdiff/vcat+sort)
+# ============================================================================
+
+"""
+    sorted_setdiff(a::Vector{Int}, b::Vector{Int}) -> Vector{Int}
+
+Compute setdiff(a, b) for sorted vectors. Returns a sorted result.
+Avoids the Set/Dict allocation that Base.setdiff uses internally.
+Both `a` and `b` must be sorted in ascending order.
+"""
+function sorted_setdiff(a::Vector{Int}, b::Vector{Int})
+    result = Int[]
+    ia, ib = 1, 1
+    na, nb = length(a), length(b)
+    @inbounds while ia <= na
+        if ib > nb || a[ia] < b[ib]
+            push!(result, a[ia])
+            ia += 1
+        elseif a[ia] == b[ib]
+            ia += 1
+            ib += 1
+        else
+            ib += 1
+        end
+    end
+    return result
+end
+
+"""
+    sorted_merge(a::Vector{Int}, b::Vector{Int}) -> Vector{Int}
+
+Merge two sorted vectors into a single sorted vector.
+Equivalent to `sort(vcat(a, b))` but avoids intermediate allocation and sorting.
+Assumes no duplicates between `a` and `b` (disjoint sets).
+"""
+function sorted_merge(a::Vector{Int}, b::Vector{Int})
+    na, nb = length(a), length(b)
+    result = Vector{Int}(undef, na + nb)
+    ia, ib, ir = 1, 1, 1
+    @inbounds while ia <= na && ib <= nb
+        if a[ia] <= b[ib]
+            result[ir] = a[ia]
+            ia += 1
+        else
+            result[ir] = b[ib]
+            ib += 1
+        end
+        ir += 1
+    end
+    @inbounds while ia <= na
+        result[ir] = a[ia]
+        ia += 1
+        ir += 1
+    end
+    @inbounds while ib <= nb
+        result[ir] = b[ib]
+        ib += 1
+        ir += 1
+    end
+    return result
 end

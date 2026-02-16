@@ -104,17 +104,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::NBMeanDispersionClusterRState) = (m = state.m_dict, r = state.r_dict)
-copy_cluster_param_dicts(state::NBMeanDispersionClusterRState) = (m = copy(state.m_dict), r = copy(state.r_dict))
-
-function make_candidate_state(::NBMeanDispersionClusterR, state::NBMeanDispersionClusterRState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
-    NBMeanDispersionClusterRState(c_can, params_can.m, params_can.r)
-end
-
-function commit_params!(state::NBMeanDispersionClusterRState, params_can::NamedTuple)
-    empty!(state.m_dict); merge!(state.m_dict, params_can.m)
-    empty!(state.r_dict); merge!(state.r_dict, params_can.r)
-end
 
 function fixed_dim_params(::NBMeanDispersionClusterR, S_i::Vector{Int},
                           table_old::Vector{Int}, table_new::Vector{Int},

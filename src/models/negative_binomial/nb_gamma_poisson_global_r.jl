@@ -106,16 +106,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::NBGammaPoissonGlobalRState) = (m = state.m_dict,)
-copy_cluster_param_dicts(state::NBGammaPoissonGlobalRState) = (m = copy(state.m_dict),)
-
-function make_candidate_state(::NBGammaPoissonGlobalR, state::NBGammaPoissonGlobalRState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
-    NBGammaPoissonGlobalRState(c_can, state.λ, params_can.m, state.r)
-end
-
-function commit_params!(state::NBGammaPoissonGlobalRState, params_can::NamedTuple)
-    empty!(state.m_dict); merge!(state.m_dict, params_can.m)
-end
 
 function fixed_dim_params(::NBGammaPoissonGlobalR, S_i::Vector{Int},
                           table_old::Vector{Int}, table_new::Vector{Int},

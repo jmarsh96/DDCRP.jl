@@ -119,15 +119,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::GammaClusterShapeMargState) = (α = state.α_dict,)
-copy_cluster_param_dicts(state::GammaClusterShapeMargState) = (α = copy(state.α_dict),)
-
-function make_candidate_state(::GammaClusterShapeMarg, state::GammaClusterShapeMargState, c_can::Vector{Int}, params_can::NamedTuple)
-    GammaClusterShapeMargState(c_can, params_can.α)
-end
-
-function commit_params!(state::GammaClusterShapeMargState, params_can::NamedTuple)
-    empty!(state.α_dict); merge!(state.α_dict, params_can.α)
-end
 
 # --- PriorProposal ---
 function sample_birth_params(::GammaClusterShapeMarg, ::PriorProposal, S_i::Vector{Int}, state::GammaClusterShapeMargState, data::ContinuousData, priors::GammaClusterShapeMargPriors)
@@ -245,8 +236,7 @@ function table_contribution(
     priors::GammaClusterShapeMargPriors
 )
     y = observations(data)
-    key = sort(table)
-    α = state.α_dict[key]
+    α = state.α_dict[table]
 
     if α <= 0
         return -Inf
@@ -254,7 +244,7 @@ function table_contribution(
 
     n = length(table)
     sum_y = sum(view(y, table))
-    sum_log_y = sum(log.(view(y, table)))
+    sum_log_y = sum(log, view(y, table))
 
     # Marginal likelihood (integrating out β)
     log_lik = (α - 1) * sum_log_y -
@@ -286,7 +276,7 @@ function posterior(
     priors::GammaClusterShapeMargPriors,
     log_DDCRP::AbstractMatrix
 )
-    return sum(table_contribution(model, sort(table), state, data, priors)
+    return sum(table_contribution(model, table, state, data, priors)
                for table in keys(state.α_dict)) +
            ddcrp_contribution(state.c, log_DDCRP)
 end
@@ -325,8 +315,7 @@ function update_α_table!(
     priors::GammaClusterShapeMargPriors;
     prop_sd::Float64 = 0.5
 )
-    key = sort(table)
-    α_old = state.α_dict[key]
+    α_old = state.α_dict[table]
 
     # Propose on log-scale for positivity
     log_α_old = log(α_old)
@@ -337,7 +326,7 @@ function update_α_table!(
     logpost_old = table_contribution(model, table, state, data, priors)
 
     # Modify in-place
-    state.α_dict[key] = α_new
+    state.α_dict[table] = α_new
 
     # Compute new contribution (reads from modified state)
     logpost_new = table_contribution(model, table, state, data, priors)
@@ -350,7 +339,7 @@ function update_α_table!(
 
     if log(rand()) >= log_accept_ratio
         # Reject: restore old value
-        state.α_dict[key] = α_old
+        state.α_dict[table] = α_old
     end
 end
 

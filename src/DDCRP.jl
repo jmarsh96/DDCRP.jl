@@ -75,8 +75,7 @@ export update_c!
 export initialise_state, extract_samples!, allocate_samples
 
 # RJMCMC interface methods
-export cluster_param_dicts, copy_cluster_param_dicts
-export make_candidate_state, commit_params!
+export cluster_param_dicts
 export sample_birth_params, birth_params_logpdf, fixed_dim_params
 
 # Diagnostics
@@ -114,7 +113,8 @@ export point_estimate_clustering, posterior_summary
 # Sampler utilities
 export get_moving_set, find_table_for_customer
 export compute_fixed_dim_means, compute_weighted_means, resample_posterior_means
-export update_c_rjmcmc_cached!, save_entries, restore_entries!
+export update_c_rjmcmc!, save_entries, restore_entries!
+export sorted_setdiff, sorted_merge
 
 # Proposal utilities
 export fit_inverse_gamma_moments, fit_gamma_shape_moments

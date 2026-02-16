@@ -88,16 +88,6 @@ end
 # ============================================================================
 
 cluster_param_dicts(state::PoissonClusterRatesState) = (λ = state.λ_dict,)
-copy_cluster_param_dicts(state::PoissonClusterRatesState) = (λ = copy(state.λ_dict),)
-
-function make_candidate_state(::PoissonClusterRates, state::PoissonClusterRatesState,
-                              c_can::Vector{Int}, params_can::NamedTuple)
-    PoissonClusterRatesState(c_can, params_can.λ)
-end
-
-function commit_params!(state::PoissonClusterRatesState, params_can::NamedTuple)
-    empty!(state.λ_dict); merge!(state.λ_dict, params_can.λ)
-end
 
 # --- PriorProposal (samples from conjugate posterior) ---
 function sample_birth_params(::PoissonClusterRates, ::PriorProposal,
