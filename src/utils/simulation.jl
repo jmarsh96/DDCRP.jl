@@ -41,15 +41,19 @@ function simulate_λ(customer_assignments, tables, m, r)
 end
 
 """
-    simulate_negbin_data(n, n_clusters, cluster_means, r; α=0.1, scale=1.0)
+    simulate_negbin_data(n, cluster_means, r; α=0.1, scale=1.0, x=nothing)
 
 Simulate complete negative binomial data with DDCRP clustering.
 
 # Arguments
 - `n`: Number of observations
-- `n_clusters`: Approximate number of clusters (via α)
 - `cluster_means`: True cluster means (recycled if needed)
 - `r`: Dispersion parameter
+- `α`: DDCRP concentration parameter (default 0.1)
+- `scale`: DDCRP distance scale (default 1.0)
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1]. Pass a structured
+  vector to control which observations occupy which spatial region.
 
 # Returns
 - `y`: Observed counts
@@ -61,9 +65,14 @@ Simulate complete negative binomial data with DDCRP clustering.
 - `D`: Distance matrix
 """
 function simulate_negbin_data(n::Int, cluster_means::Vector{Float64}, r::Float64;
-                               α::Float64=0.1, scale::Float64=1.0)
+                               α::Float64=0.1, scale::Float64=1.0,
+                               x::Union{Nothing, Vector{Float64}}=nothing)
     # Generate 1D covariate and distance matrix
-    x = rand(n)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
     D = construct_distance_matrix(x)
 
     # Simulate DDCRP clustering

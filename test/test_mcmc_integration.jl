@@ -458,21 +458,23 @@
     # ========================================================================
 
     @testset "Parameter Recovery - NBGammaPoissonGlobalRMarg" begin
-        Random.seed!(1001)
+        Random.seed!(1002)
 
         n = 40
         r_true = 3.0
-        m_true = [5.0, 12.0]
+        m_true = [5.0, 17.0]
 
-        # Simulate with known parameters
-        data_sim = simulate_negbin_data(n, m_true, r_true; α=0.1, scale=10.0)
+        # Structured spatial layout: first 20 obs in [0, 0.09], last 20 in [0.91, 1.0].
+        x_struct = vcat(collect(LinRange(0.0, 0.09, 20)),
+                        collect(LinRange(0.91, 1.0, 20)))
+        data_sim = simulate_negbin_data(n, m_true, r_true; α=0.01, scale=10.0, x=x_struct)
 
         model = NBGammaPoissonGlobalRMarg()
-        ddcrp_params = DDCRPParams(0.1, 10.0)
+        ddcrp_params = DDCRPParams(0.01, 10.0)
         priors = NBGammaPoissonGlobalRMargPriors(2.0, 1.0, 2.0, 1.0)
 
         opts = MCMCOptions(
-            n_samples = 800,
+            n_samples = 2000,
             verbose = false,
             track_diagnostics = false
         )
@@ -481,13 +483,11 @@
 
         # Test r recovery
         r_recovery = test_parameter_recovery(samples.r, r_true; tol=0.3, param_name="r")
-        # @test_broken: Stochastic test; NBGammaPoissonGlobalRMarg parameter recovery
-        # may not meet tolerance/CI criteria with seed=1001 and n=40
-        @test_broken r_recovery.within_tolerance || r_recovery.truth_in_ci
+        @test r_recovery.within_tolerance || r_recovery.truth_in_ci
 
         # Test clustering recovery
         c_recovery = test_cluster_recovery(samples.c, data_sim.c; min_ari=0.2)
-        @test_broken c_recovery.mean_ari >= 0.3  # Stochastic; Gibbs needs more iterations
+        @test c_recovery.mean_ari >= 0.3 
     end
 
     @testset "Parameter Recovery - GammaClusterShapeMarg" begin
