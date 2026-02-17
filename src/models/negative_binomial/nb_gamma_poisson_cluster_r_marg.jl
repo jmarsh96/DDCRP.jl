@@ -211,6 +211,7 @@ function table_contribution(
     ::NBGammaPoissonClusterRMarg,
     table::AbstractVector{Int},
     state::NBGammaPoissonClusterRMargState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonClusterRMargPriors
 )
     n = length(table)
@@ -245,7 +246,7 @@ function posterior(
 )
     y = observations(data)
     tables = table_vector(state.c)
-    return sum(table_contribution(model, table, state, priors) for table in tables) +
+    return sum(table_contribution(model, table, state, data, priors) for table in tables) +
            ddcrp_contribution(state.c, log_DDCRP) +
            likelihood_contribution(y, state.λ)
 end
@@ -278,9 +279,9 @@ function update_λ!(
     state_can = NBGammaPoissonClusterRMargState(state.c, λ_can, state.r_dict)
 
     logpost_current = likelihood_contribution(y, state.λ) +
-                      table_contribution(model, tables[table_i], state, priors)
+                      table_contribution(model, tables[table_i], state, data, priors)
     logpost_candidate = likelihood_contribution(y, λ_can) +
-                        table_contribution(model, tables[table_i], state_can, priors)
+                        table_contribution(model, tables[table_i], state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -297,12 +298,13 @@ Update all cluster dispersion parameters using Metropolis-Hastings.
 function update_r!(
     model::NBGammaPoissonClusterRMarg,
     state::NBGammaPoissonClusterRMargState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonClusterRMargPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
 )
     for table in tables
-        update_r_table!(model, table, state, priors; prop_sd=prop_sd)
+        update_r_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
@@ -315,6 +317,7 @@ function update_r_table!(
     model::NBGammaPoissonClusterRMarg,
     table::Vector{Int},
     state::NBGammaPoissonClusterRMargState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonClusterRMargPriors;
     prop_sd::Float64 = 0.5
 )
@@ -326,8 +329,8 @@ function update_r_table!(
     r_dict_can[key] = r_can
     state_can = NBGammaPoissonClusterRMargState(state.c, state.λ, r_dict_can)
 
-    logpost_current = table_contribution(model, table, state, priors)
-    logpost_candidate = table_contribution(model, table, state_can, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -357,7 +360,7 @@ function update_params!(
     end
 
     if should_infer(opts, :r)
-        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
 end
 

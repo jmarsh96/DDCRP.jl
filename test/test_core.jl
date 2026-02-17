@@ -302,7 +302,7 @@
 
         # Multiple disconnected components
         # Cluster 1: {1,2,3}, Cluster 2: {4,5}, Cluster 3: {6,7,8,9}
-        c = [2, 3, 1, 5, 5, 7, 8, 6, 9]
+        c = [2, 3, 1, 5, 5, 7, 8, 9, 6]  # 6→7→8→9→6 forms cycle {6,7,8,9}
         tables = table_vector(c)
         @test length(tables) == 3
         @test sort(vcat(tables...)) == collect(1:9)
@@ -320,13 +320,13 @@
 
         # Very large distances should approach zero
         @test decay(100.0; scale=1.0) < 1e-40
-        @test decay(1000.0; scale=1.0) < 1e-400
+        @test decay(1000.0; scale=1.0) < 1e-300  # 1e-400 underflows to 0.0 in Float64
 
-        # Very small scale makes decay very steep
-        @test decay(0.1; scale=0.01) < decay(0.1; scale=10.0)
+        # Very large scale makes decay very steep (decay(d;scale)=exp(-d*scale))
+        @test decay(0.1; scale=10.0) < decay(0.1; scale=0.01)
 
-        # Very large scale makes decay very gradual
-        @test decay(10.0; scale=100.0) > 0.9  # Still close to 1
+        # Very small scale makes decay very gradual
+        @test decay(10.0; scale=0.01) > 0.9  # exp(-10*0.01) = exp(-0.1) ≈ 0.905
 
         # Monotonicity: d1 < d2 => decay(d1) > decay(d2)
         for scale in [0.1, 1.0, 10.0]
@@ -367,11 +367,11 @@
         @test sorted_merge(Int[], [1, 2]) == [1, 2]
         @test sorted_merge(Int[], Int[]) == Int[]
 
-        # Overlapping sets
-        a = [1, 3, 5, 7]
+        # Disjoint sets with interleaving (sorted_merge assumes disjoint inputs)
+        a = [1, 4, 7]
         b = [3, 5, 9]
         result = sorted_merge(a, b)
-        @test result == [1, 3, 5, 7, 9]
+        @test result == [1, 3, 4, 5, 7, 9]
         @test issorted(result)
 
         # Large sets (performance check)

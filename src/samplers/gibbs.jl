@@ -73,7 +73,7 @@ function update_c_gibbs!(
     table_minus_i = table_vector_minus_i(i, state.c)
     current_table = table_minus_i[findfirst(x -> i in x, table_minus_i)]
 
-    current_table_contrib = table_contribution(model, current_table, state, priors)
+    current_table_contrib = table_contribution(model, current_table, state, data, priors)
 
     for customer in current_table
         log_probs[customer] = log_DDCRP[i, customer]
@@ -82,9 +82,9 @@ function update_c_gibbs!(
     remaining_tables = setdiff(table_minus_i, [current_table])
 
     for table in remaining_tables
-        prop_table_contrib = table_contribution(model, table, state, priors)
+        prop_table_contrib = table_contribution(model, table, state, data, priors)
         joined_table = vcat(current_table, table)
-        joined_table_contrib = table_contribution(model, joined_table, state, priors)
+        joined_table_contrib = table_contribution(model, joined_table, state, data, priors)
 
         term = joined_table_contrib - prop_table_contrib - current_table_contrib
 

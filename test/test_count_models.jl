@@ -44,14 +44,16 @@ Random.seed!(43)
             @test length(state.λ) == n
             @test all(state.λ .> 0)
             @test state.r > 0
-            @test isempty(state.m_dict) == false
+            # Marginalised model - no m_dict field
         end
 
         @testset "Table Contribution" begin
             state = initialise_state(model, data, ddcrp_params, priors)
 
-            for table in keys(state.m_dict)
-                contrib = table_contribution(model, table, state, priors)
+            # Marginalised model - use table_vector instead of m_dict
+            tables = table_vector(state.c)
+            for table in tables
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end
@@ -63,8 +65,7 @@ Random.seed!(43)
             post = posterior(model, data, state, priors, log_DDCRP)
             @test isfinite(post)
 
-            # Check components match
-            check_posterior_components(model, state, data, priors, log_DDCRP)
+            # Marginalised model - skip check_posterior_components (no cluster_param_dicts)
         end
 
         @testset "Parameter Updates" begin
@@ -80,7 +81,7 @@ Random.seed!(43)
 
             # Update r
             r_before = state.r
-            update_r!(model, state, priors, tables; prop_sd=0.3)
+            update_r!(model, state, data, priors, tables; prop_sd=0.3)
             @test state.r > 0
         end
 
@@ -124,7 +125,7 @@ Random.seed!(43)
             state = initialise_state(model, data, ddcrp_params, priors)
 
             for table in keys(state.m_dict)
-                contrib = table_contribution(model, table, state, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end
@@ -173,7 +174,7 @@ Random.seed!(43)
             state = initialise_state(model, data, ddcrp_params, priors)
 
             for table in keys(state.r_dict)
-                contrib = table_contribution(model, table, state, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end
@@ -210,15 +211,15 @@ Random.seed!(43)
 
             @test state isa NBMeanDispersionGlobalRState
             @test length(state.c) == n
-            @test !isempty(state.μ_dict)
-            @test all(v > 0 for v in values(state.μ_dict))
+            @test !isempty(state.m_dict)
+            @test all(v > 0 for v in values(state.m_dict))
             @test state.r > 0
         end
 
         @testset "Table Contribution" begin
             state = initialise_state(model, data, ddcrp_params, priors)
 
-            for table in keys(state.μ_dict)
+            for table in keys(state.m_dict)
                 contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
@@ -239,7 +240,7 @@ Random.seed!(43)
             opts = MCMCOptions()
 
             update_params!(model, state, data, priors, tables, log_DDCRP, opts)
-            @test all(v > 0 for v in values(state.μ_dict))
+            @test all(v > 0 for v in values(state.m_dict))
             @test state.r > 0
         end
     end
@@ -256,16 +257,16 @@ Random.seed!(43)
 
             @test state isa NBMeanDispersionClusterRState
             @test length(state.c) == n
-            @test !isempty(state.μ_dict)
+            @test !isempty(state.m_dict)
             @test !isempty(state.r_dict)
-            @test all(v > 0 for v in values(state.μ_dict))
+            @test all(v > 0 for v in values(state.m_dict))
             @test all(v > 0 for v in values(state.r_dict))
         end
 
         @testset "Table Contribution" begin
             state = initialise_state(model, data, ddcrp_params, priors)
 
-            for table in keys(state.μ_dict)
+            for table in keys(state.m_dict)
                 contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
@@ -286,7 +287,7 @@ Random.seed!(43)
             opts = MCMCOptions()
 
             update_params!(model, state, data, priors, tables, log_DDCRP, opts)
-            @test all(v > 0 for v in values(state.μ_dict))
+            @test all(v > 0 for v in values(state.m_dict))
             @test all(v > 0 for v in values(state.r_dict))
         end
     end
@@ -409,11 +410,9 @@ end # Negative Binomial Models
         model = PoissonPopulationRates()
         priors = PoissonPopulationRatesPriors(2.0, 1.0)
 
-        # Create population data with offsets
-        n_pops = 3
-        pop_assignments = rand(1:n_pops, n)
-        E = rand(n) .+ 0.5  # Offset/exposure
-        data_pop = PopulationCountData(y, pop_assignments, E, D)
+        # Create population data with integer exposures/population sizes
+        E = rand(1:10, n)  # Integer population sizes
+        data_pop = CountDataWithTrials(y, E, D)
 
         @testset "State Initialization" begin
             state = initialise_state(model, data_pop, ddcrp_params, priors)
@@ -445,7 +444,7 @@ end # Negative Binomial Models
             state = initialise_state(model, data_pop, ddcrp_params, priors)
             tables = table_vector(state.c)
 
-            update_population_rates!(model, state, data_pop, priors, tables)
+            update_cluster_rates!(model, state, data_pop, priors, tables)
             @test all(v > 0 for v in values(state.ρ_dict))
         end
     end
@@ -512,8 +511,7 @@ end # Poisson Models
 
             post = posterior(model, data, state, priors, log_DDCRP)
             @test isfinite(post)
-
-            check_posterior_components(model, state, data, priors, log_DDCRP)
+            # Marginalised model - skip check_posterior_components (no cluster_param_dicts)
         end
 
         @testset "Edge Cases" begin

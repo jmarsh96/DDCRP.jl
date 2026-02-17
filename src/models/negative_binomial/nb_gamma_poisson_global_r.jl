@@ -239,6 +239,7 @@ function table_contribution(
     ::NBGammaPoissonGlobalR,
     table::AbstractVector{Int},
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors
 )
     n_k = length(table)
@@ -270,7 +271,7 @@ function posterior(
     log_DDCRP::AbstractMatrix
 )
     y = observations(data)
-    return sum(table_contribution(model, sort(table), state, priors) for table in keys(state.m_dict)) +
+    return sum(table_contribution(model, sort(table), state, data, priors) for table in keys(state.m_dict)) +
            ddcrp_contribution(state.c, log_DDCRP) +
            likelihood_contribution(y, state.λ)
 end
@@ -303,9 +304,9 @@ function update_λ!(
     state_can = NBGammaPoissonGlobalRState(state.c, λ_can, state.m_dict, state.r)
 
     logpost_current = likelihood_contribution(y, state.λ) +
-                      table_contribution(model, tables[table_i], state, priors)
+                      table_contribution(model, tables[table_i], state, data, priors)
     logpost_candidate = likelihood_contribution(y, λ_can) +
-                        table_contribution(model, tables[table_i], state_can, priors)
+                        table_contribution(model, tables[table_i], state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -322,6 +323,7 @@ Update global dispersion parameter r using Metropolis-Hastings.
 function update_r!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -331,9 +333,9 @@ function update_r!(
 
     state_can = NBGammaPoissonGlobalRState(state.c, state.λ, state.m_dict, r_can)
 
-    logpost_current = sum(table_contribution(model, table, state, priors) for table in tables) +
+    logpost_current = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                       logpdf(Gamma(priors.r_a, 1/priors.r_b), state.r)
-    logpost_candidate = sum(table_contribution(model, table, state_can, priors) for table in tables) +
+    logpost_candidate = sum(table_contribution(model, table, state_can, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1/priors.r_b), r_can)
 
     log_accept_ratio = logpost_candidate - logpost_current
@@ -351,11 +353,12 @@ Update all cluster means using Metropolis-Hastings.
 function update_m!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
     for table in keys(state.m_dict)
-        update_m_table!(model, table, state, priors; prop_sd=prop_sd)
+        update_m_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
@@ -368,6 +371,7 @@ function update_m_table!(
     model::NBGammaPoissonGlobalR,
     table::Vector{Int},
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
@@ -378,8 +382,8 @@ function update_m_table!(
 
     state_can = NBGammaPoissonGlobalRState(state.c, state.λ, m_can, state.r)
 
-    logpost_current = table_contribution(model, table, state, priors)
-    logpost_candidate = table_contribution(model, table, state_can, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -410,11 +414,11 @@ function update_params!(
     end
 
     if should_infer(opts, :m)
-        update_m!(model, state, priors; prop_sd=get_prop_sd(opts, :m))
+        update_m!(model, state, data, priors; prop_sd=get_prop_sd(opts, :m))
     end
 
     if should_infer(opts, :r)
-        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
 end
 

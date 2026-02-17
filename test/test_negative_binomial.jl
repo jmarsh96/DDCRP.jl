@@ -38,7 +38,7 @@
             state = NBGammaPoissonGlobalRMargState(copy(c_true), copy(λ_true), 5.0)
 
             for table in tables_true
-                contrib = table_contribution(model, table, state, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
                 @test contrib < 0  # Log-probability should be negative
             end
@@ -70,9 +70,10 @@
         @testset "Update r" begin
             state = NBGammaPoissonGlobalRMargState(copy(c_true), copy(λ_true), 5.0)
             tables = table_vector(state.c)
+            data = CountData(y, D)
 
             for _ in 1:20
-                update_r!(model, state, priors, tables; prop_sd=0.5)
+                update_r!(model, state, data, priors, tables; prop_sd=0.5)
             end
 
             @test state.r > 0
@@ -106,7 +107,7 @@
             state = NBGammaPoissonGlobalRState(copy(c_true), copy(λ_true), m_dict, 5.0)
 
             for table in keys(m_dict)
-                contrib = table_contribution(model, table, state, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end
@@ -131,9 +132,10 @@
                 m_dict[sort(table)] = mean(λ_true[table])
             end
             state = NBGammaPoissonGlobalRState(copy(c_true), copy(λ_true), m_dict, 5.0)
+            data = CountData(y, D)
 
             for _ in 1:20
-                update_m!(model, state, priors; prop_sd=0.5)
+                update_m!(model, state, data, priors; prop_sd=0.5)
             end
 
             @test all(v > 0 for v in values(state.m_dict))
@@ -167,7 +169,7 @@
             state = NBGammaPoissonClusterRMargState(copy(c_true), copy(λ_true), r_dict)
 
             for table in tables
-                contrib = table_contribution(model, table, state, priors)
+                contrib = table_contribution(model, table, state, data, priors)
                 @test isfinite(contrib)
             end
         end

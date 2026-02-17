@@ -109,6 +109,7 @@ function table_contribution(
     ::NBGammaPoissonGlobalRMarg,
     table::AbstractVector{Int},
     state::NBGammaPoissonGlobalRMargState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRMargPriors
 )
     n = length(table)
@@ -140,7 +141,7 @@ function posterior(
 )
     y = observations(data)
     tables = table_vector(state.c)
-    return sum(table_contribution(model, table, state, priors) for table in tables) +
+    return sum(table_contribution(model, table, state, data, priors) for table in tables) +
            ddcrp_contribution(state.c, log_DDCRP) +
            likelihood_contribution(y, state.λ)
 end
@@ -175,9 +176,9 @@ function update_λ!(
     state_can = NBGammaPoissonGlobalRMargState(state.c, λ_can, state.r)
 
     logpost_current = likelihood_contribution(y, state.λ) +
-                      table_contribution(model, tables[table_i], state, priors)
+                      table_contribution(model, tables[table_i], state, data, priors)
     logpost_candidate = likelihood_contribution(y, λ_can) +
-                        table_contribution(model, tables[table_i], state_can, priors)
+                        table_contribution(model, tables[table_i], state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -194,6 +195,7 @@ Update global dispersion parameter r using Metropolis-Hastings.
 function update_r!(
     model::NBGammaPoissonGlobalRMarg,
     state::NBGammaPoissonGlobalRMargState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRMargPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -203,9 +205,9 @@ function update_r!(
 
     state_can = NBGammaPoissonGlobalRMargState(state.c, state.λ, r_can)
 
-    logpost_current = sum(table_contribution(model, table, state, priors) for table in tables) +
+    logpost_current = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                       logpdf(Gamma(priors.r_a, 1/priors.r_b), state.r)
-    logpost_candidate = sum(table_contribution(model, table, state_can, priors) for table in tables) +
+    logpost_candidate = sum(table_contribution(model, table, state_can, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1/priors.r_b), r_can)
 
     log_accept_ratio = logpost_candidate - logpost_current
@@ -237,7 +239,7 @@ function update_params!(
     end
 
     if should_infer(opts, :r)
-        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
     # Assignment updates handled by update_c!
 end

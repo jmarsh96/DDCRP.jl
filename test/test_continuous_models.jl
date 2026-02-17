@@ -315,7 +315,7 @@
         data = ContinuousData(data_sim.y, data_sim.D)
         priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
 
-        state = initialise_state(SkewNormalCluster(), data, ddcrp_params = DDCRPParams(0.05, 10.0), priors)
+        state = initialise_state(SkewNormalCluster(), data, DDCRPParams(0.05, 10.0), priors)
 
         h_before = copy(state.h)
 
