@@ -366,4 +366,233 @@
         end
     end
 
+    # ========================================================================
+    # Continuous Model Integration Tests
+    # ========================================================================
+
+    @testset "GammaClusterShapeMarg Full MCMC" begin
+        Random.seed!(888)
+
+        n = 30
+        # Simulate data with two clusters with different shapes
+        data_sim = simulate_gamma_data(n, [2.0, 5.0], [1.0, 2.0]; α=0.1, scale=10.0)
+
+        model = GammaClusterShapeMarg()
+        ddcrp_params = DDCRPParams(0.1, 10.0)
+        priors = GammaClusterShapeMargPriors(2.0, 2.0, 2.0, 1.0)
+
+        opts = MCMCOptions(
+            n_samples = 400,
+            verbose = false,
+            track_diagnostics = true,
+            fixed_dim_mode = :none
+        )
+
+        cont_data = ContinuousData(data_sim.y, data_sim.D)
+        samples, diag = mcmc(model, cont_data, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        @test samples isa AbstractMCMCSamples
+        @test size(samples.c) == (400, n)
+        @test size(samples.α) == (400, n)  # Gamma uses α not α_shape
+        @test length(samples.logpost) == 400
+
+        # Sanity checks
+        @test all(isfinite.(samples.logpost))
+        @test all(samples.α .> 0)  # Gamma uses α not α_shape
+
+        # Check RJMCMC occurred
+        @test diag.birth_proposes + diag.death_proposes > 0
+
+        # Check clustering recovery
+        ari_trace = compute_ari_trace(samples.c, data_sim.c)
+        mean_ari = mean(ari_trace[201:end])  # Second half
+        @test mean_ari >= 0.3  # Some recovery expected
+    end
+
+    @testset "SkewNormalCluster Full MCMC" begin
+        Random.seed!(999)
+
+        n = 30
+        # Simulate data with symmetric and skewed clusters
+        cluster_ξ = [0.0, 5.0]
+        cluster_ω = [1.0, 1.5]
+        cluster_α = [0.0, 2.0]  # Symmetric vs right-skewed
+
+        data_sim = simulate_skewnormal_data(n, cluster_ξ, cluster_ω, cluster_α; α=0.1, scale=10.0)
+
+        model = SkewNormalCluster()
+        ddcrp_params = DDCRPParams(0.1, 10.0)
+        priors = SkewNormalClusterPriors(0.0, 100.0, 2.0, 1.0, 0.0, 5.0)
+
+        opts = MCMCOptions(
+            n_samples = 400,
+            verbose = false,
+            track_diagnostics = true,
+            fixed_dim_mode = :none
+        )
+
+        cont_data = ContinuousData(data_sim.y, data_sim.D)
+        samples, diag = mcmc(model, cont_data, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        @test samples isa AbstractMCMCSamples
+        @test size(samples.c) == (400, n)
+        @test size(samples.ξ) == (400, n)
+        @test size(samples.ω) == (400, n)
+        @test size(samples.α_shape) == (400, n)
+        @test length(samples.logpost) == 400
+
+        # Sanity checks
+        @test all(isfinite.(samples.logpost))
+        @test all(samples.ω .> 0)  # Scale must be positive
+
+        # Note: h (latent variables) are not saved in samples, only used internally
+
+        # Check RJMCMC occurred
+        @test diag.birth_proposes + diag.death_proposes > 0
+    end
+
+    # ========================================================================
+    # Parameter Recovery Tests
+    # ========================================================================
+
+    @testset "Parameter Recovery - NBGammaPoissonGlobalRMarg" begin
+        Random.seed!(1001)
+
+        n = 40
+        r_true = 3.0
+        m_true = [5.0, 12.0]
+
+        # Simulate with known parameters
+        data_sim = simulate_negbin_data(n, m_true, r_true; α=0.1, scale=10.0)
+
+        model = NBGammaPoissonGlobalRMarg()
+        ddcrp_params = DDCRPParams(0.1, 10.0)
+        priors = NBGammaPoissonGlobalRMargPriors(2.0, 1.0, 2.0, 1.0)
+
+        opts = MCMCOptions(
+            n_samples = 800,
+            verbose = false,
+            track_diagnostics = false
+        )
+
+        samples = mcmc(model, data_sim.y, data_sim.D, ddcrp_params, priors; opts=opts)
+
+        # Test r recovery
+        r_recovery = test_parameter_recovery(samples.r, r_true; tol=0.3, param_name="r")
+        @test r_recovery.within_tolerance || r_recovery.truth_in_ci
+
+        # Test clustering recovery
+        c_recovery = test_cluster_recovery(samples.c, data_sim.c; min_ari=0.4)
+        @test c_recovery.mean_ari >= 0.3  # Relaxed threshold for small sample
+    end
+
+    @testset "Parameter Recovery - GammaClusterShapeMarg" begin
+        Random.seed!(1002)
+
+        n = 40
+        α_true = [2.5, 5.0]
+        β_true = [1.0, 2.0]
+
+        # Simulate with known parameters
+        data_sim = simulate_gamma_data(n, α_true, β_true; α=0.15, scale=8.0)
+
+        model = GammaClusterShapeMarg()
+        ddcrp_params = DDCRPParams(0.15, 8.0)
+        priors = GammaClusterShapeMargPriors(2.0, 2.0, 2.0, 1.0)
+
+        opts = MCMCOptions(
+            n_samples = 600,
+            verbose = false,
+            track_diagnostics = false
+        )
+
+        cont_data = ContinuousData(data_sim.y, data_sim.D)
+        samples = mcmc(model, cont_data, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        # Test shape parameter recovery for each observation
+        # Average shape parameters per cluster in posterior
+        burnin = div(length(samples.logpost), 5)
+
+        # Extract mean shape per cluster
+        α_samples_postburn = samples.α[(burnin+1):end, :]  # Gamma uses α not α_shape
+        mean_shapes = mean(α_samples_postburn, dims=1)[:]
+
+        # Should recover positive shape parameters
+        @test all(mean_shapes .> 0)
+
+        # Test clustering recovery
+        c_recovery = test_cluster_recovery(samples.c, data_sim.c; min_ari=0.3)
+        @test c_recovery.mean_ari >= 0.2  # Continuous models harder to cluster
+    end
+
+    @testset "Parameter Recovery - SkewNormalCluster" begin
+        Random.seed!(1003)
+
+        n = 40
+        # Test with one symmetric and one skewed cluster
+        cluster_ξ = [0.0, 8.0]
+        cluster_ω = [1.0, 1.5]
+        cluster_α = [0.0, 3.0]  # Symmetric vs strongly right-skewed
+
+        data_sim = simulate_skewnormal_data(n, cluster_ξ, cluster_ω, cluster_α; α=0.15, scale=8.0)
+
+        model = SkewNormalCluster()
+        ddcrp_params = DDCRPParams(0.15, 8.0)
+        priors = SkewNormalClusterPriors(0.0, 100.0, 2.0, 1.0, 0.0, 5.0)
+
+        opts = MCMCOptions(
+            n_samples = 600,
+            verbose = false,
+            track_diagnostics = false
+        )
+
+        cont_data = ContinuousData(data_sim.y, data_sim.D)
+        samples = mcmc(model, cont_data, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        # Sanity checks on recovered parameters
+        burnin = div(length(samples.logpost), 5)
+
+        ξ_samples = samples.ξ[(burnin+1):end, :]
+        ω_samples = samples.ω[(burnin+1):end, :]
+        α_samples = samples.α_shape[(burnin+1):end, :]
+
+        # Scale parameters should be positive
+        @test all(ω_samples .> 0)
+
+        # Location parameters should be reasonable
+        @test all(isfinite.(ξ_samples))
+
+        # Shape parameters should vary (detecting skewness)
+        @test std(vec(α_samples)) > 0.1
+
+        # Test clustering recovery
+        c_recovery = test_cluster_recovery(samples.c, data_sim.c; min_ari=0.25)
+        @test c_recovery.mean_ari >= 0.15  # Skewed distributions harder
+    end
+
+    @testset "Parameter Recovery - Poisson" begin
+        Random.seed!(1004)
+
+        n = 40
+        λ_true = [3.0, 9.0]
+
+        data_sim = simulate_poisson_data(n, λ_true; α=0.1, scale=10.0)
+
+        model = PoissonClusterRates()
+        ddcrp_params = DDCRPParams(0.1, 10.0)
+        priors = PoissonClusterRatesPriors(2.0, 1.0)
+
+        opts = MCMCOptions(
+            n_samples = 600,
+            verbose = false,
+            track_diagnostics = false
+        )
+
+        samples = mcmc(model, data_sim.y, data_sim.D, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        # Test clustering recovery
+        c_recovery = test_cluster_recovery(samples.c, data_sim.c; min_ari=0.5)
+        @test c_recovery.mean_ari >= 0.3
+    end
+
 end

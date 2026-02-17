@@ -30,7 +30,7 @@ Parameters:
 - r_k: Cluster-specific dispersion parameters
 """
 struct NBGammaPoissonClusterRMarg <: NegativeBinomialModel end
-NBGammaPoissonClusterRMargState
+
 # ============================================================================
 # State Type
 # ============================================================================
