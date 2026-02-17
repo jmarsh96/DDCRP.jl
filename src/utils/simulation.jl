@@ -93,13 +93,22 @@ function simulate_negbin_data(n::Int, cluster_means::Vector{Float64}, r::Float64
 end
 
 """
-    simulate_poisson_data(n, cluster_rates; α=0.1, scale=1.0)
+    simulate_poisson_data(n, cluster_rates; α=0.1, scale=1.0, x=nothing)
 
 Simulate Poisson data with DDCRP clustering.
+
+# Arguments
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1].
 """
 function simulate_poisson_data(n::Int, cluster_rates::Vector{Float64};
-                                α::Float64=0.1, scale::Float64=1.0)
-    x = rand(n)
+                                α::Float64=0.1, scale::Float64=1.0,
+                                x::Union{Nothing, Vector{Float64}}=nothing)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
     D = construct_distance_matrix(x)
 
     c = simulate_ddcrp(D; α=α, scale=scale)
@@ -123,7 +132,7 @@ function simulate_poisson_data(n::Int, cluster_rates::Vector{Float64};
 end
 
 """
-    simulate_binomial_data(n, N, cluster_probs; α=0.1, scale=1.0)
+    simulate_binomial_data(n, N, cluster_probs; α=0.1, scale=1.0, x=nothing)
 
 Simulate Binomial data with DDCRP clustering.
 
@@ -131,10 +140,17 @@ Simulate Binomial data with DDCRP clustering.
 - `n`: Number of observations
 - `N`: Number of trials (scalar or vector)
 - `cluster_probs`: True cluster success probabilities
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1].
 """
 function simulate_binomial_data(n::Int, N::Union{Int, Vector{Int}}, cluster_probs::Vector{Float64};
-                                 α::Float64=0.1, scale::Float64=1.0)
-    x = rand(n)
+                                 α::Float64=0.1, scale::Float64=1.0,
+                                 x::Union{Nothing, Vector{Float64}}=nothing)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
     D = construct_distance_matrix(x)
 
     c = simulate_ddcrp(D; α=α, scale=scale)
@@ -160,7 +176,7 @@ function simulate_binomial_data(n::Int, N::Union{Int, Vector{Int}}, cluster_prob
 end
 
 """
-    simulate_skewnormal_data(n, cluster_ξ, cluster_ω, cluster_α; α=0.1, scale=1.0)
+    simulate_skewnormal_data(n, cluster_ξ, cluster_ω, cluster_α; α=0.1, scale=1.0, x=nothing)
 
 Simulate Skew Normal data with DDCRP clustering.
 
@@ -169,6 +185,8 @@ Simulate Skew Normal data with DDCRP clustering.
 - `cluster_ξ`: True cluster location parameters
 - `cluster_ω`: True cluster scale parameters
 - `cluster_α`: True cluster shape parameters
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1].
 
 # Returns
 Named tuple with:
@@ -185,8 +203,13 @@ function simulate_skewnormal_data(n::Int,
                                    cluster_ξ::Vector{Float64},
                                    cluster_ω::Vector{Float64},
                                    cluster_α::Vector{Float64};
-                                   α::Float64=0.1, scale::Float64=1.0)
-    x = rand(n)
+                                   α::Float64=0.1, scale::Float64=1.0,
+                                   x::Union{Nothing, Vector{Float64}}=nothing)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
     D = construct_distance_matrix(x)
 
     c = simulate_ddcrp(D; α=α, scale=scale)
@@ -226,7 +249,7 @@ function simulate_skewnormal_data(n::Int,
 end
 
 """
-    simulate_gamma_data(n, cluster_shapes, cluster_rates; α=0.1, scale=1.0)
+    simulate_gamma_data(n, cluster_shapes, cluster_rates; α=0.1, scale=1.0, x=nothing)
 
 Simulate Gamma data with DDCRP clustering.
 
@@ -236,6 +259,8 @@ Simulate Gamma data with DDCRP clustering.
 - `cluster_rates`: True cluster rate parameters (β_k)
 - `α`: DDCRP concentration parameter
 - `scale`: DDCRP distance scale
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1].
 
 # Returns
 Named tuple with:
@@ -250,8 +275,13 @@ Named tuple with:
 function simulate_gamma_data(n::Int,
                               cluster_shapes::Vector{Float64},
                               cluster_rates::Vector{Float64};
-                              α::Float64=0.1, scale::Float64=1.0)
-    x = rand(n)
+                              α::Float64=0.1, scale::Float64=1.0,
+                              x::Union{Nothing, Vector{Float64}}=nothing)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
     D = construct_distance_matrix(x)
 
     c = simulate_ddcrp(D; α=α, scale=scale)
