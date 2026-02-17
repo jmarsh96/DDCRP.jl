@@ -102,11 +102,6 @@ end
 # Trait Functions
 # ============================================================================
 
-has_latent_rates(::NBMeanDispersionGlobalR) = false
-has_global_dispersion(::NBMeanDispersionGlobalR) = true
-has_cluster_dispersion(::NBMeanDispersionGlobalR) = false
-has_cluster_means(::NBMeanDispersionGlobalR) = true
-has_cluster_rates(::NBMeanDispersionGlobalR) = false
 is_marginalised(::NBMeanDispersionGlobalR) = false
 
 # ============================================================================
@@ -260,8 +255,6 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     if should_infer(opts, :m)
         update_m!(model, state, data, priors; prop_sd=get_prop_sd(opts, :m))
     end
@@ -269,10 +262,6 @@ function update_params!(
     if should_infer(opts, :r)
         update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
-
-    # Note: Assignment updates would need RJMCMC implementation for this unmarginalised model
-
-    return diagnostics
 end
 
 # ============================================================================

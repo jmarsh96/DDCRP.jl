@@ -27,7 +27,9 @@ export AbstractObservedData, CountData, CountDataWithTrials
 export observations, distance_matrix, trials, has_trials, nobs, requires_trials
 
 # Birth proposals for RJMCMC
-export PriorProposal, NormalMeanProposal, MomentMatchedProposal, LogNormalProposal
+export PriorProposal, ConjugateProposal, MomentMatchedProposal
+export NormalMomentMatch, InverseGammaMomentMatch, LogNormalMomentMatch
+export FixedDistributionProposal, MixedProposal
 
 # Negative Binomial model variants
 export NBGammaPoissonGlobalRMarg, NBGammaPoissonGlobalRMargState, NBGammaPoissonGlobalRMargPriors, NBGammaPoissonGlobalRMargSamples
@@ -53,7 +55,6 @@ export SkewNormalClusterState, SkewNormalClusterPriors, SkewNormalClusterSamples
 export GammaModel, GammaClusterShapeMarg
 export GammaClusterShapeMargState, GammaClusterShapeMargPriors, GammaClusterShapeMargSamples
 export ContinuousData
-export has_latent_augmentation, has_cluster_location, has_cluster_scale, has_cluster_shape
 export skewnormal_logpdf, delta_from_alpha, sample_h_conditional
 export estimate_skewness, alpha_from_skewness, estimate_skewnormal_params
 export update_h!, update_ξ!, update_ω!, update_α!
@@ -64,19 +65,19 @@ export DDCRPParams
 # MCMC
 export MCMCOptions, MCMCSamples, mcmc
 export MCMCDiagnostics, MCMCSummary
-export should_infer, get_prop_sd, build_birth_proposal, determine_assignment_method
+export should_infer, get_prop_sd
 
 # Interface methods
 export table_contribution, posterior
 export update_λ!, update_r!, update_m!
 export update_params!, update_cluster_rates!, update_cluster_probs!
-export sample_proposal, proposal_logpdf
+export update_c!
 export initialise_state, extract_samples!, allocate_samples
 
-# Trait functions
-export has_latent_rates, has_global_dispersion, has_cluster_dispersion
-export has_cluster_means, has_cluster_rates, has_cluster_probs
-export is_marginalised
+# RJMCMC interface methods
+export cluster_param_dicts
+export sample_birth_params, birth_params_logpdf, fixed_dim_params
+export sample_birth_param, birth_param_logpdf
 
 # Diagnostics
 export acceptance_rates, pairwise_acceptance_rates
@@ -113,9 +114,11 @@ export point_estimate_clustering, posterior_summary
 # Sampler utilities
 export get_moving_set, find_table_for_customer
 export compute_fixed_dim_means, compute_weighted_means, resample_posterior_means
+export update_c_rjmcmc!, save_entries, restore_entries!
+export sorted_setdiff, sorted_merge
 
 # Proposal utilities
-export fit_inverse_gamma_moments, compute_proposal_σ, compute_lognormal_σ
+export fit_inverse_gamma_moments, fit_gamma_shape_moments
 
 # ============================================================================
 # Include files in dependency order
@@ -127,6 +130,7 @@ include("core/priors.jl")
 include("core/ddcrp.jl")
 include("core/state.jl")
 include("core/options.jl")
+include("core/rjmcmc_interface.jl")
 
 # Inference machinery - proposals and diagnostics (depends on core)
 include("inference/proposals.jl")

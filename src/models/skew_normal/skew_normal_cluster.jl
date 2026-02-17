@@ -123,22 +123,358 @@ struct SkewNormalClusterSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
+
 # ============================================================================
-# Trait Functions
+# RJMCMC Interface
 # ============================================================================
 
-has_latent_rates(::SkewNormalCluster) = false
-has_global_dispersion(::SkewNormalCluster) = false
-has_cluster_dispersion(::SkewNormalCluster) = false
-has_cluster_means(::SkewNormalCluster) = false
-has_cluster_rates(::SkewNormalCluster) = false
-is_marginalised(::SkewNormalCluster) = false
+cluster_param_dicts(state::SkewNormalClusterState) = (ξ = state.ξ_dict, ω = state.ω_dict, α = state.α_dict)
 
-# Skew normal specific traits
-has_latent_augmentation(::SkewNormalCluster) = true
-has_cluster_location(::SkewNormalCluster) = true
-has_cluster_scale(::SkewNormalCluster) = true
-has_cluster_shape(::SkewNormalCluster) = true
+# ============================================================================
+# Per-Parameter RJMCMC Interface (for use with MixedProposal)
+# ============================================================================
+#
+# Each method handles a single cluster parameter.
+# Supported combinations:
+#   ξ  : PriorProposal, NormalMomentMatch
+#   ω  : PriorProposal, InverseGammaMomentMatch, LogNormalMomentMatch, NormalMomentMatch
+#   α  : PriorProposal, NormalMomentMatch
+
+# --- ξ (location, can be negative) ---
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ξ}, ::PriorProposal,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    Q = Normal(priors.ξ_μ, priors.ξ_σ)
+    ξ_new = rand(Q)
+    return ξ_new, logpdf(Q, ξ_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ξ}, ::PriorProposal,
+                             ξ_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return logpdf(Normal(priors.ξ_μ, priors.ξ_σ), ξ_val)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ξ}, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    Q = Normal(mean(view(y, S_i)), prop.σ[1])
+    ξ_new = rand(Q)
+    return ξ_new, logpdf(Q, ξ_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ξ}, prop::NormalMomentMatch,
+                             ξ_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    return logpdf(Normal(mean(view(y, S_i)), prop.σ[1]), ξ_val)
+end
+
+# --- ω (scale, must be positive; prior is on ω²) ---
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ω}, ::PriorProposal,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    Q_ω² = InverseGamma(priors.ω_a, priors.ω_b)
+    ω²_new = rand(Q_ω²)
+    ω_new = sqrt(ω²_new)
+    # Jacobian for ω² → ω: p(ω) = p(ω²) × 2ω
+    log_q = logpdf(Q_ω², ω²_new) + log(2 * ω_new)
+    return ω_new, log_q
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ω}, ::PriorProposal,
+                             ω_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    Q_ω² = InverseGamma(priors.ω_a, priors.ω_b)
+    return logpdf(Q_ω², ω_val^2) + log(2 * ω_val)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ω}, prop::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        result = fit_inverse_gamma_moments(all_ω²)
+        if !isnothing(result)
+            α_ig, β_ig = result
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            ω²_new = rand(Q_ω²)
+            ω_new = sqrt(ω²_new)
+            log_q = logpdf(Q_ω², ω²_new) + log(2 * ω_new)
+            return ω_new, log_q
+        end
+    end
+    return sample_birth_param(SkewNormalCluster(), Val(:ω), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ω}, prop::InverseGammaMomentMatch,
+                             ω_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        result = fit_inverse_gamma_moments(all_ω²)
+        if !isnothing(result)
+            α_ig, β_ig = result
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            return logpdf(Q_ω², ω_val^2) + log(2 * ω_val)
+        end
+    end
+    return birth_param_logpdf(SkewNormalCluster(), Val(:ω), PriorProposal(), ω_val, S_i, state, data, priors)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ω}, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[1])
+    log_ω_new = rand(Q_log_ω)
+    ω_new = exp(log_ω_new)
+    # Jacobian for log(ω) → ω: p(ω) = p(log ω) / ω
+    log_q = logpdf(Q_log_ω, log_ω_new) - log_ω_new
+    return ω_new, log_q
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ω}, prop::LogNormalMomentMatch,
+                             ω_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[1])
+    log_ω = log(ω_val)
+    return logpdf(Q_log_ω, log_ω) - log_ω
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ω}, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    # Propose on log-scale using σ[1], matching the NormalMomentMatch convention for ω
+    y = observations(data)
+    data_Si = view(y, S_i)
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[1])
+    log_ω_new = rand(Q_log_ω)
+    ω_new = exp(log_ω_new)
+    log_q = logpdf(Q_log_ω, log_ω_new) - log_ω_new
+    return ω_new, log_q
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ω}, prop::NormalMomentMatch,
+                             ω_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[1])
+    log_ω = log(ω_val)
+    return logpdf(Q_log_ω, log_ω) - log_ω
+end
+
+# --- α (shape, can be negative) ---
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:α}, ::PriorProposal,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    Q = Normal(priors.α_μ, priors.α_σ)
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:α}, ::PriorProposal,
+                             α_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return logpdf(Normal(priors.α_μ, priors.α_σ), α_val)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:α}, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    Q = Normal(α_est, prop.σ[1])
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:α}, prop::NormalMomentMatch,
+                             α_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    return logpdf(Normal(α_est, prop.σ[1]), α_val)
+end
+
+# --- PriorProposal ---
+function sample_birth_params(::SkewNormalCluster, ::PriorProposal,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+    Q_ω² = InverseGamma(priors.ω_a, priors.ω_b)
+    Q_α = Normal(priors.α_μ, priors.α_σ)
+    ξ_new = rand(Q_ξ)
+    ω²_new = rand(Q_ω²)
+    ω_new = sqrt(ω²_new)
+    α_new = rand(Q_α)
+    # log_q includes Jacobian for ω² → ω transform: p(ω) = p(ω²) × 2ω
+    log_q = logpdf(Q_ξ, ξ_new) + logpdf(Q_ω², ω²_new) + log(2 * ω_new) + logpdf(Q_α, α_new)
+    return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+end
+
+function birth_params_logpdf(::SkewNormalCluster, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+    Q_ω² = InverseGamma(priors.ω_a, priors.ω_b)
+    Q_α = Normal(priors.α_μ, priors.α_σ)
+    return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_ω², params_old.ω^2) + log(2 * params_old.ω) + logpdf(Q_α, params_old.α)
+end
+
+# --- NormalMomentMatch ---
+function sample_birth_params(::SkewNormalCluster, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    # ξ: Normal centered at empirical mean
+    Q_ξ = Normal(mean(data_Si), prop.σ[1])
+    ξ_new = rand(Q_ξ)
+    # ω: LogNormal centered at empirical std
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[2])
+    log_ω_new = rand(Q_log_ω)
+    ω_new = exp(log_ω_new)
+    # α: Normal centered at skewness estimate
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    Q_α = Normal(α_est, prop.σ[3])
+    α_new = rand(Q_α)
+    log_q = logpdf(Q_ξ, ξ_new) + logpdf(Q_log_ω, log_ω_new) - log_ω_new + logpdf(Q_α, α_new)
+    return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+end
+
+function birth_params_logpdf(::SkewNormalCluster, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    Q_ξ = Normal(mean(data_Si), prop.σ[1])
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[2])
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    Q_α = Normal(α_est, prop.σ[3])
+    log_ω = log(params_old.ω)
+    return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_log_ω, log_ω) - log_ω + logpdf(Q_α, params_old.α)
+end
+
+# --- LogNormalMomentMatch ---
+function sample_birth_params(::SkewNormalCluster, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    # ξ: Normal centered at empirical mean (ξ can be negative, no log transform)
+    Q_ξ = Normal(mean(data_Si), prop.σ[1])
+    ξ_new = rand(Q_ξ)
+    # ω: LogNormal
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[2])
+    log_ω_new = rand(Q_log_ω)
+    ω_new = exp(log_ω_new)
+    # α: Normal (α can be negative)
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    Q_α = Normal(α_est, prop.σ[3])
+    α_new = rand(Q_α)
+    log_q = logpdf(Q_ξ, ξ_new) + logpdf(Q_log_ω, log_ω_new) - log_ω_new + logpdf(Q_α, α_new)
+    return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+end
+
+function birth_params_logpdf(::SkewNormalCluster, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    Q_ξ = Normal(mean(data_Si), prop.σ[1])
+    log_ω_est = log(max(std(data_Si; corrected=false), 0.01))
+    Q_log_ω = Normal(log_ω_est, prop.σ[2])
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    Q_α = Normal(α_est, prop.σ[3])
+    log_ω = log(params_old.ω)
+    return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_log_ω, log_ω) - log_ω + logpdf(Q_α, params_old.α)
+end
+
+# --- InverseGammaMomentMatch ---
+# For ω: fit InverseGamma to ω² values from all current clusters via method of moments.
+# For ξ and α: fall back to prior proposal (Normal priors, not suitable for InvGamma MM).
+function sample_birth_params(::SkewNormalCluster, prop::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        μ_ω² = mean(all_ω²)
+        σ²_ω² = var(all_ω²)
+        if σ²_ω² > 0 && μ_ω² > 0
+            α_ig = 2 + μ_ω²^2 / σ²_ω²
+            β_ig = μ_ω² * (α_ig - 1)
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            ω²_new = rand(Q_ω²)
+            ω_new = sqrt(ω²_new)
+            Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+            Q_α = Normal(priors.α_μ, priors.α_σ)
+            ξ_new = rand(Q_ξ)
+            α_new = rand(Q_α)
+            log_q = logpdf(Q_ξ, ξ_new) + logpdf(Q_ω², ω²_new) + log(2 * ω_new) + logpdf(Q_α, α_new)
+            return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+        end
+    end
+    return sample_birth_params(SkewNormalCluster(), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_params_logpdf(::SkewNormalCluster, prop::InverseGammaMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        μ_ω² = mean(all_ω²)
+        σ²_ω² = var(all_ω²)
+        if σ²_ω² > 0 && μ_ω² > 0
+            α_ig = 2 + μ_ω²^2 / σ²_ω²
+            β_ig = μ_ω² * (α_ig - 1)
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+            Q_α = Normal(priors.α_μ, priors.α_σ)
+            return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_ω², params_old.ω^2) + log(2 * params_old.ω) + logpdf(Q_α, params_old.α)
+        end
+    end
+    return birth_params_logpdf(SkewNormalCluster(), PriorProposal(), params_old, S_i, state, data, priors)
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::SkewNormalCluster, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    ξ_new = rand(prop.dists[1])
+    ω_new = rand(prop.dists[2])
+    α_new = rand(prop.dists[3])
+    log_q = logpdf(prop.dists[1], ξ_new) + logpdf(prop.dists[2], ω_new) + logpdf(prop.dists[3], α_new)
+    return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+end
+
+function birth_params_logpdf(::SkewNormalCluster, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    return logpdf(prop.dists[1], params_old.ξ) + logpdf(prop.dists[2], params_old.ω) + logpdf(prop.dists[3], params_old.α)
+end
 
 # ============================================================================
 # Table Contribution
@@ -408,354 +744,14 @@ function update_α_table!(
 end
 
 # ============================================================================
-# Birth Proposal Functions for RJMCMC
-# ============================================================================
-
-"""
-    sample_birth_proposal(model::SkewNormalCluster, S_i, y, h, priors, opts)
-
-Sample new cluster parameters (ξ, ω, α) for a birth move in RJMCMC.
-
-Returns (ξ_new, ω_new, α_new, log_q_forward) where log_q_forward is the
-log proposal density for the Hastings ratio.
-
-Strategy:
-- α: Use empirical skewness-based proposal (Normal centered at estimate)
-- ω: Moment-matched LogNormal proposal using sample variance and δ
-- ξ: Sample from full conditional given h, ω, α (Gibbs-like)
-
-The moment-matching for ω uses: Var(Y) = ω² × (1 - 2δ²/π)
-so ω_est = sqrt(s² / (1 - 2δ²/π)) where s² is the sample variance.
-"""
-function sample_birth_proposal(
-    model::SkewNormalCluster,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    h::Vector{<:Real},
-    priors::SkewNormalClusterPriors,
-    opts::MCMCOptions
-)
-    n_Si = length(S_i)
-    data_Si = view(y, S_i)
-
-    # Step 1: Estimate and sample α from empirical skewness
-    if n_Si >= 3
-        γ₁ = estimate_skewness(collect(data_Si))
-        α_est = alpha_from_skewness(γ₁)
-    else
-        α_est = 0.0
-    end
-
-    σ_α = get(opts.birth_proposal_params, :σ_α, 2.0)
-    Q_α = Normal(α_est, σ_α)
-    α_new = rand(Q_α)
-    log_q_α = logpdf(Q_α, α_new)
-
-    # Step 2: Moment-matched proposal for ω using sample variance
-    # Skew normal variance: Var(Y) = ω² × (1 - 2δ²/π)
-    δ_new = delta_from_alpha(α_new)
-    variance_factor = 1 - 2 * δ_new^2 / π
-
-    s² = var(data_Si; corrected=false)
-    s² = max(s², 1e-6)  # Floor to avoid numerical issues
-
-    # ω²_est = s² / variance_factor, so ω_est = sqrt(s² / variance_factor)
-    # But variance_factor can be very small for large |α|, so we clamp it
-    variance_factor = max(variance_factor, 0.1)
-    ω_est = sqrt(s² / variance_factor)
-    ω_est = max(ω_est, 0.01)  # Ensure positive
-
-    # Sample ω from LogNormal centered at log(ω_est)
-    σ_ω = get(opts.birth_proposal_params, :σ_ω, 0.5)
-    log_ω_est = log(ω_est)
-    Q_log_ω = Normal(log_ω_est, σ_ω)
-    log_ω_new = rand(Q_log_ω)
-    ω_new = exp(log_ω_new)
-    # log_q_ω = logpdf of LogNormal = logpdf(Normal) - log(ω) (Jacobian)
-    log_q_ω = logpdf(Q_log_ω, log_ω_new) - log_ω_new
-
-    # Step 3: Sample ξ from full conditional given h, ω, α
-    δ = delta_from_alpha(α_new)
-    τ = 1 - δ^2
-    y_adj = [y[i] - ω_new * δ * h[i] for i in S_i]
-
-    var_lik = ω_new^2 * τ
-    prec_lik = n_Si / var_lik
-    prec_prior = 1 / priors.ξ_σ^2
-    prec_post = prec_lik + prec_prior
-    μ_post = (sum(y_adj) / var_lik + priors.ξ_μ / priors.ξ_σ^2) / prec_post
-    σ_post = sqrt(1 / prec_post)
-
-    Q_ξ = Normal(μ_post, σ_post)
-    ξ_new = rand(Q_ξ)
-    log_q_ξ = logpdf(Q_ξ, ξ_new)
-
-    log_q_forward = log_q_ξ + log_q_ω + log_q_α
-
-    return ξ_new, ω_new, α_new, log_q_forward
-end
-
-"""
-    birth_proposal_logpdf(model::SkewNormalCluster, ξ, ω, α, S_i, y, h, priors, opts)
-
-Compute log proposal density for given parameters (used in death move for reverse ratio).
-Must match the proposal distributions in `sample_birth_proposal`.
-"""
-function birth_proposal_logpdf(
-    model::SkewNormalCluster,
-    ξ::Real, ω::Real, α::Real,
-    S_i::Vector{Int},
-    y::AbstractVector,
-    h::Vector{<:Real},
-    priors::SkewNormalClusterPriors,
-    opts::MCMCOptions
-)
-    n_Si = length(S_i)
-    data_Si = view(y, S_i)
-
-    # Step 1: α proposal density (Normal centered at empirical skewness estimate)
-    if n_Si >= 3
-        γ₁ = estimate_skewness(collect(data_Si))
-        α_est = alpha_from_skewness(γ₁)
-    else
-        α_est = 0.0
-    end
-    σ_α = get(opts.birth_proposal_params, :σ_α, 2.0)
-    log_q_α = logpdf(Normal(α_est, σ_α), α)
-
-    # Step 2: ω proposal density (LogNormal, moment-matched)
-    # Note: We use the GIVEN α to compute δ for the moment-matched estimate,
-    # matching the sequential sampling in sample_birth_proposal
-    δ_given = delta_from_alpha(α)
-    variance_factor = 1 - 2 * δ_given^2 / π
-    variance_factor = max(variance_factor, 0.1)
-
-    s² = var(data_Si; corrected=false)
-    s² = max(s², 1e-6)
-    ω_est = sqrt(s² / variance_factor)
-    ω_est = max(ω_est, 0.01)
-
-    σ_ω = get(opts.birth_proposal_params, :σ_ω, 0.5)
-    log_ω_est = log(ω_est)
-    log_ω = log(ω)
-    # LogNormal density: logpdf(Normal(μ, σ), log(x)) - log(x)
-    log_q_ω = logpdf(Normal(log_ω_est, σ_ω), log_ω) - log_ω
-
-    # Step 3: ξ proposal density (full conditional given α, ω)
-    δ = delta_from_alpha(α)
-    τ = 1 - δ^2
-    y_adj = [y[i] - ω * δ * h[i] for i in S_i]
-
-    var_lik = ω^2 * τ
-    prec_lik = n_Si / var_lik
-    prec_prior = 1 / priors.ξ_σ^2
-    prec_post = prec_lik + prec_prior
-    μ_post = (sum(y_adj) / var_lik + priors.ξ_μ / priors.ξ_σ^2) / prec_post
-    σ_post = sqrt(1 / prec_post)
-
-    log_q_ξ = logpdf(Normal(μ_post, σ_post), ξ)
-
-    return log_q_ξ + log_q_ω + log_q_α
-end
-
-# ============================================================================
-# RJMCMC for Customer Assignments
-# ============================================================================
-
-"""
-    update_c_rjmcmc!(model::SkewNormalCluster, i, state, data, priors, log_DDCRP, opts)
-
-Update customer assignment using RJMCMC (birth/death/fixed dimension moves).
-Returns (move_type::Symbol, j_star::Int, accepted::Bool).
-"""
-function update_c_rjmcmc!(
-    model::SkewNormalCluster,
-    i::Int,
-    state::SkewNormalClusterState,
-    data::ContinuousData,
-    priors::SkewNormalClusterPriors,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
-)
-    n = length(state.c)
-    j_old = state.c[i]
-    y = observations(data)
-
-    S_i = get_moving_set(i, state.c)
-    table_Si = find_table_for_customer(i, state.ξ_dict)
-    ξ_old = state.ξ_dict[table_Si]
-    ω_old = state.ω_dict[table_Si]
-    α_old = state.α_dict[table_Si]
-    table_l = setdiff(table_Si, S_i)
-
-    # Propose new link
-    j_star = rand(1:n)
-
-    j_old_in_Si = j_old in S_i
-    j_star_in_Si = j_star in S_i
-
-    # Copy state dictionaries for candidate
-    ξ_can = copy(state.ξ_dict)
-    ω_can = copy(state.ω_dict)
-    α_can = copy(state.α_dict)
-    c_can = copy(state.c)
-    c_can[i] = j_star
-
-    if !j_old_in_Si && j_star_in_Si
-        # ===== BIRTH MOVE =====
-        # S_i splits off from its current table to form a new cluster
-
-        # Sample new parameters for the new cluster (S_i)
-        ξ_new, ω_new, α_new, log_q_forward = sample_birth_proposal(
-            model, S_i, y, state.h, priors, opts
-        )
-
-        # Update dictionaries: S_i gets new params, remaining (table_l) keeps old
-        ξ_can[sort(S_i)] = ξ_new
-        ω_can[sort(S_i)] = ω_new
-        α_can[sort(S_i)] = α_new
-
-        if !isempty(table_l)
-            ξ_can[sort(table_l)] = state.ξ_dict[table_Si]
-            ω_can[sort(table_l)] = state.ω_dict[table_Si]
-            α_can[sort(table_l)] = state.α_dict[table_Si]
-        end
-
-        delete!(ξ_can, table_Si)
-        delete!(ω_can, table_Si)
-        delete!(α_can, table_Si)
-
-        lpr = -log_q_forward
-
-        state_can = SkewNormalClusterState(c_can, state.h, ξ_can, ω_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α = logpost_candidate - logpost_current + lpr
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.ξ_dict); merge!(state.ξ_dict, ξ_can)
-            empty!(state.ω_dict); merge!(state.ω_dict, ω_can)
-            empty!(state.α_dict); merge!(state.α_dict, α_can)
-            return (:birth, j_star, true)
-        end
-        return (:birth, j_star, false)
-
-    elseif j_old_in_Si && !j_star_in_Si
-        # ===== DEATH MOVE =====
-        # S_i merges into target table
-
-        table_target = find_table_for_customer(j_star, state.ξ_dict)
-        ξ_target = state.ξ_dict[table_target]
-        ω_target = state.ω_dict[table_target]
-        α_target = state.α_dict[table_target]
-
-        # Merged table gets target's parameters
-        merged_table = sort(vcat(table_Si, table_target))
-        ξ_can[merged_table] = ξ_target
-        ω_can[merged_table] = ω_target
-        α_can[merged_table] = α_target
-
-        # Compute reverse proposal density (what would be the birth proposal for old params)
-        log_q_reverse = birth_proposal_logpdf(
-            model, ξ_old, ω_old, α_old, S_i, y, state.h, priors, opts
-        )
-
-        delete!(ξ_can, table_Si)
-        delete!(ξ_can, table_target)
-        delete!(ω_can, table_Si)
-        delete!(ω_can, table_target)
-        delete!(α_can, table_Si)
-        delete!(α_can, table_target)
-
-        lpr = log_q_reverse
-
-        state_can = SkewNormalClusterState(c_can, state.h, ξ_can, ω_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α = logpost_candidate - logpost_current + lpr
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.ξ_dict); merge!(state.ξ_dict, ξ_can)
-            empty!(state.ω_dict); merge!(state.ω_dict, ω_can)
-            empty!(state.α_dict); merge!(state.α_dict, α_can)
-            return (:death, j_star, true)
-        end
-        return (:death, j_star, false)
-
-    else
-        # ===== FIXED DIMENSION MOVE =====
-        table_old_target = find_table_for_customer(j_old, state.ξ_dict)
-        table_new_target = find_table_for_customer(j_star, state.ξ_dict)
-
-        if table_old_target == table_new_target
-            # Same table - just relink within table
-            state_can = SkewNormalClusterState(c_can, state.h, state.ξ_dict, state.ω_dict, state.α_dict)
-
-            logpost_current = posterior(model, data, state, priors, log_DDCRP)
-            logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-            log_α = logpost_candidate - logpost_current
-
-            if log(rand()) < log_α
-                state.c[i] = j_star
-                return (:fixed, j_star, true)
-            end
-            return (:fixed, j_star, false)
-        end
-
-        # Different tables - transfer S_i from old to new table
-        new_table_depleted = setdiff(table_old_target, S_i)
-        new_table_augmented = sort(vcat(table_new_target, S_i))
-
-        # Keep parameters unchanged (simplest fixed-dim approach)
-        ξ_depleted = state.ξ_dict[table_old_target]
-        ξ_augmented = state.ξ_dict[table_new_target]
-        ω_depleted = state.ω_dict[table_old_target]
-        ω_augmented = state.ω_dict[table_new_target]
-        α_depleted = state.α_dict[table_old_target]
-        α_augmented = state.α_dict[table_new_target]
-
-        if !isempty(new_table_depleted)
-            ξ_can[new_table_depleted] = ξ_depleted
-            ω_can[new_table_depleted] = ω_depleted
-            α_can[new_table_depleted] = α_depleted
-        end
-        ξ_can[new_table_augmented] = ξ_augmented
-        ω_can[new_table_augmented] = ω_augmented
-        α_can[new_table_augmented] = α_augmented
-
-        delete!(ξ_can, table_old_target)
-        delete!(ξ_can, table_new_target)
-        delete!(ω_can, table_old_target)
-        delete!(ω_can, table_new_target)
-        delete!(α_can, table_old_target)
-        delete!(α_can, table_new_target)
-
-        state_can = SkewNormalClusterState(c_can, state.h, ξ_can, ω_can, α_can)
-        logpost_current = posterior(model, data, state, priors, log_DDCRP)
-        logpost_candidate = posterior(model, data, state_can, priors, log_DDCRP)
-        log_α = logpost_candidate - logpost_current
-
-        if log(rand()) < log_α
-            state.c[i] = j_star
-            empty!(state.ξ_dict); merge!(state.ξ_dict, ξ_can)
-            empty!(state.ω_dict); merge!(state.ω_dict, ω_can)
-            empty!(state.α_dict); merge!(state.α_dict, α_can)
-            return (:fixed, j_star, true)
-        end
-        return (:fixed, j_star, false)
-    end
-end
-
-# ============================================================================
 # Update Params Orchestration
 # ============================================================================
 
 """
     update_params!(model::SkewNormalCluster, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters in sequence.
+Update model parameters (h, ξ, ω, α). Assignment updates are handled
+separately by `update_c!` in the main MCMC loop.
 """
 function update_params!(
     model::SkewNormalCluster,
@@ -766,8 +762,6 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
     # 1. Update latent h (Gibbs)
     if should_infer(opts, :h)
         update_h!(model, state, data, priors)
@@ -787,16 +781,6 @@ function update_params!(
     if should_infer(opts, :α)
         update_α!(model, state, data, priors; prop_sd=get_prop_sd(opts, :α))
     end
-
-    # 5. Update assignments c (RJMCMC)
-    if should_infer(opts, :c)
-        for i in 1:nobs(data)
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
-            push!(diagnostics, (move_type, i, j_star, accepted))
-        end
-    end
-
-    return diagnostics
 end
 
 # ============================================================================
@@ -899,20 +883,3 @@ function extract_samples!(
     end
 end
 
-# ============================================================================
-# Helper function to find table for customer (used in RJMCMC)
-# ============================================================================
-
-"""
-    find_table_for_customer(i::Int, param_dict::Dict{Vector{Int}, T}) where T
-
-Find the table (key) that contains customer i.
-"""
-function find_table_for_customer(i::Int, param_dict::Dict{Vector{Int}, T}) where T
-    for table in keys(param_dict)
-        if i in table
-            return table
-        end
-    end
-    error("Customer $i not found in any table")
-end

@@ -99,16 +99,132 @@ struct NBGammaPoissonGlobalRSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
 end
 
+
+
 # ============================================================================
-# Trait Functions
+# RJMCMC Interface
 # ============================================================================
 
-has_latent_rates(::NBGammaPoissonGlobalR) = true
-has_global_dispersion(::NBGammaPoissonGlobalR) = true
-has_cluster_dispersion(::NBGammaPoissonGlobalR) = false
-has_cluster_means(::NBGammaPoissonGlobalR) = true
-has_cluster_rates(::NBGammaPoissonGlobalR) = false
-is_marginalised(::NBGammaPoissonGlobalR) = false
+cluster_param_dicts(state::NBGammaPoissonGlobalRState) = (m = state.m_dict,)
+
+function fixed_dim_params(::NBGammaPoissonGlobalR, S_i::Vector{Int},
+                          table_old::Vector{Int}, table_new::Vector{Int},
+                          state::NBGammaPoissonGlobalRState, data::CountData,
+                          priors::NBGammaPoissonGlobalRPriors, opts::MCMCOptions)
+    m_depleted, m_augmented, lpr = compute_fixed_dim_means(
+        opts.fixed_dim_mode, S_i, state.λ,
+        table_old, state.m_dict[table_old],
+        table_new, state.m_dict[table_new], priors)
+    return (m = m_depleted,), (m = m_augmented,), lpr
+end
+
+# --- PriorProposal ---
+function sample_birth_params(::NBGammaPoissonGlobalR, ::PriorProposal,
+                             S_i::Vector{Int}, state::NBGammaPoissonGlobalRState,
+                             data::CountData, priors::NBGammaPoissonGlobalRPriors)
+    Q = InverseGamma(priors.m_a, priors.m_b)
+    m_new = rand(Q)
+    return (m = m_new,), logpdf(Q, m_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonGlobalR, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonGlobalRState, data::CountData,
+                             priors::NBGammaPoissonGlobalRPriors)
+    return logpdf(InverseGamma(priors.m_a, priors.m_b), params_old.m)
+end
+
+# --- NormalMomentMatch ---
+function sample_birth_params(::NBGammaPoissonGlobalR, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::NBGammaPoissonGlobalRState,
+                             data::CountData, priors::NBGammaPoissonGlobalRPriors)
+    μ = mean(view(state.λ, S_i))
+    Q = truncated(Normal(μ, prop.σ[1]), 0.0, Inf)
+    m_new = rand(Q)
+    return (m = m_new,), logpdf(Q, m_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonGlobalR, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonGlobalRState, data::CountData,
+                             priors::NBGammaPoissonGlobalRPriors)
+    μ = mean(view(state.λ, S_i))
+    Q = truncated(Normal(μ, prop.σ[1]), 0.0, Inf)
+    return logpdf(Q, params_old.m)
+end
+
+# --- InverseGammaMomentMatch ---
+function sample_birth_params(::NBGammaPoissonGlobalR, prop::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::NBGammaPoissonGlobalRState,
+                             data::CountData, priors::NBGammaPoissonGlobalRPriors)
+    λ_data = view(state.λ, S_i)
+    if length(S_i) >= prop.min_size
+        params = fit_inverse_gamma_moments(λ_data)
+        if !isnothing(params)
+            α, β = params
+            Q = InverseGamma(α, β)
+            m_new = rand(Q)
+            return (m = m_new,), logpdf(Q, m_new)
+        end
+    end
+    # Fallback to prior
+    return sample_birth_params(NBGammaPoissonGlobalR(), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_params_logpdf(::NBGammaPoissonGlobalR, prop::InverseGammaMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonGlobalRState, data::CountData,
+                             priors::NBGammaPoissonGlobalRPriors)
+    λ_data = view(state.λ, S_i)
+    if length(S_i) >= prop.min_size
+        params = fit_inverse_gamma_moments(λ_data)
+        if !isnothing(params)
+            α, β = params
+            return logpdf(InverseGamma(α, β), params_old.m)
+        end
+    end
+    return birth_params_logpdf(NBGammaPoissonGlobalR(), PriorProposal(), params_old, S_i, state, data, priors)
+end
+
+# --- LogNormalMomentMatch ---
+function sample_birth_params(::NBGammaPoissonGlobalR, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::NBGammaPoissonGlobalRState,
+                             data::CountData, priors::NBGammaPoissonGlobalRPriors)
+    log_data = log.(view(state.λ, S_i))
+    μ = mean(log_data)
+    σ = prop.σ[1]
+    log_m = rand(Normal(μ, σ))
+    m_new = exp(log_m)
+    log_q = logpdf(Normal(μ, σ), log_m) - log_m
+    return (m = m_new,), log_q
+end
+
+function birth_params_logpdf(::NBGammaPoissonGlobalR, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonGlobalRState, data::CountData,
+                             priors::NBGammaPoissonGlobalRPriors)
+    log_data = log.(view(state.λ, S_i))
+    μ = mean(log_data)
+    σ = prop.σ[1]
+    log_m = log(params_old.m)
+    return logpdf(Normal(μ, σ), log_m) - log_m
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_params(::NBGammaPoissonGlobalR, prop::FixedDistributionProposal,
+                             S_i::Vector{Int}, state::NBGammaPoissonGlobalRState,
+                             data::CountData, priors::NBGammaPoissonGlobalRPriors)
+    Q = prop.dists[1]
+    m_new = rand(Q)
+    return (m = m_new,), logpdf(Q, m_new)
+end
+
+function birth_params_logpdf(::NBGammaPoissonGlobalR, prop::FixedDistributionProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::NBGammaPoissonGlobalRState, data::CountData,
+                             priors::NBGammaPoissonGlobalRPriors)
+    return logpdf(prop.dists[1], params_old.m)
+end
 
 # ============================================================================
 # Table Contribution
@@ -123,6 +239,7 @@ function table_contribution(
     ::NBGammaPoissonGlobalR,
     table::AbstractVector{Int},
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors
 )
     n_k = length(table)
@@ -154,7 +271,7 @@ function posterior(
     log_DDCRP::AbstractMatrix
 )
     y = observations(data)
-    return sum(table_contribution(model, sort(table), state, priors) for table in keys(state.m_dict)) +
+    return sum(table_contribution(model, sort(table), state, data, priors) for table in keys(state.m_dict)) +
            ddcrp_contribution(state.c, log_DDCRP) +
            likelihood_contribution(y, state.λ)
 end
@@ -187,9 +304,9 @@ function update_λ!(
     state_can = NBGammaPoissonGlobalRState(state.c, λ_can, state.m_dict, state.r)
 
     logpost_current = likelihood_contribution(y, state.λ) +
-                      table_contribution(model, tables[table_i], state, priors)
+                      table_contribution(model, tables[table_i], state, data, priors)
     logpost_candidate = likelihood_contribution(y, λ_can) +
-                        table_contribution(model, tables[table_i], state_can, priors)
+                        table_contribution(model, tables[table_i], state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -206,6 +323,7 @@ Update global dispersion parameter r using Metropolis-Hastings.
 function update_r!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -215,9 +333,9 @@ function update_r!(
 
     state_can = NBGammaPoissonGlobalRState(state.c, state.λ, state.m_dict, r_can)
 
-    logpost_current = sum(table_contribution(model, table, state, priors) for table in tables) +
+    logpost_current = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                       logpdf(Gamma(priors.r_a, 1/priors.r_b), state.r)
-    logpost_candidate = sum(table_contribution(model, table, state_can, priors) for table in tables) +
+    logpost_candidate = sum(table_contribution(model, table, state_can, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1/priors.r_b), r_can)
 
     log_accept_ratio = logpost_candidate - logpost_current
@@ -235,11 +353,12 @@ Update all cluster means using Metropolis-Hastings.
 function update_m!(
     model::NBGammaPoissonGlobalR,
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
     for table in keys(state.m_dict)
-        update_m_table!(model, table, state, priors; prop_sd=prop_sd)
+        update_m_table!(model, table, state, data, priors; prop_sd=prop_sd)
     end
 end
 
@@ -252,6 +371,7 @@ function update_m_table!(
     model::NBGammaPoissonGlobalR,
     table::Vector{Int},
     state::NBGammaPoissonGlobalRState,
+    data::AbstractObservedData,
     priors::NBGammaPoissonGlobalRPriors;
     prop_sd::Float64 = 0.5
 )
@@ -262,8 +382,8 @@ function update_m_table!(
 
     state_can = NBGammaPoissonGlobalRState(state.c, state.λ, m_can, state.r)
 
-    logpost_current = table_contribution(model, table, state, priors)
-    logpost_candidate = table_contribution(model, table, state_can, priors)
+    logpost_current = table_contribution(model, table, state, data, priors)
+    logpost_candidate = table_contribution(model, table, state_can, data, priors)
 
     log_accept_ratio = logpost_candidate - logpost_current
 
@@ -275,8 +395,8 @@ end
 """
     update_params!(model::NBGammaPoissonGlobalR, state, data, priors, tables, log_DDCRP, opts)
 
-Update all model parameters (λ, m, r) and customer assignments.
-Returns diagnostics information for assignment updates.
+Update model parameters (λ, m, r). Assignment updates are handled
+separately by `update_c!` in the main MCMC loop.
 """
 function update_params!(
     model::NBGammaPoissonGlobalR,
@@ -287,39 +407,19 @@ function update_params!(
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
-    diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
-
-    # Update λ
     if should_infer(opts, :λ)
         for i in 1:nobs(data)
             update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
         end
     end
 
-    # Update m
     if should_infer(opts, :m)
-        update_m!(model, state, priors; prop_sd=get_prop_sd(opts, :m))
+        update_m!(model, state, data, priors; prop_sd=get_prop_sd(opts, :m))
     end
 
-    # Update r
     if should_infer(opts, :r)
-        update_r!(model, state, priors, tables; prop_sd=get_prop_sd(opts, :r))
+        update_r!(model, state, data, priors, tables; prop_sd=get_prop_sd(opts, :r))
     end
-
-    # Update customer assignments (this is an unmarginalised model, so uses RJMCMC)
-    if should_infer(opts, :c)
-        assignment_method = determine_assignment_method(model, opts)
-        if assignment_method == :rjmcmc
-            for i in 1:nobs(data)
-                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, log_DDCRP, opts)
-                push!(diagnostics, (move_type, i, j_star, accepted))
-            end
-        else
-            error("NBGammaPoissonGlobalR is unmarginalised and requires RJMCMC for assignment updates")
-        end
-    end
-
-    return diagnostics
 end
 
 # ============================================================================
