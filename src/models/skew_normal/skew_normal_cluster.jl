@@ -230,6 +230,53 @@ function birth_params_logpdf(::SkewNormalCluster, prop::LogNormalMomentMatch,
     return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_log_ω, log_ω) - log_ω + logpdf(Q_α, params_old.α)
 end
 
+# --- InverseGammaMomentMatch ---
+# For ω: fit InverseGamma to ω² values from all current clusters via method of moments.
+# For ξ and α: fall back to prior proposal (Normal priors, not suitable for InvGamma MM).
+function sample_birth_params(::SkewNormalCluster, prop::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        μ_ω² = mean(all_ω²)
+        σ²_ω² = var(all_ω²)
+        if σ²_ω² > 0 && μ_ω² > 0
+            α_ig = 2 + μ_ω²^2 / σ²_ω²
+            β_ig = μ_ω² * (α_ig - 1)
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            ω²_new = rand(Q_ω²)
+            ω_new = sqrt(ω²_new)
+            Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+            Q_α = Normal(priors.α_μ, priors.α_σ)
+            ξ_new = rand(Q_ξ)
+            α_new = rand(Q_α)
+            log_q = logpdf(Q_ξ, ξ_new) + logpdf(Q_ω², ω²_new) + log(2 * ω_new) + logpdf(Q_α, α_new)
+            return (ξ = ξ_new, ω = ω_new, α = α_new), log_q
+        end
+    end
+    return sample_birth_params(SkewNormalCluster(), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_params_logpdf(::SkewNormalCluster, prop::InverseGammaMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::SkewNormalClusterState, data::ContinuousData,
+                             priors::SkewNormalClusterPriors)
+    all_ω² = [ω^2 for ω in values(state.ω_dict)]
+    if length(all_ω²) >= prop.min_size
+        μ_ω² = mean(all_ω²)
+        σ²_ω² = var(all_ω²)
+        if σ²_ω² > 0 && μ_ω² > 0
+            α_ig = 2 + μ_ω²^2 / σ²_ω²
+            β_ig = μ_ω² * (α_ig - 1)
+            Q_ω² = InverseGamma(α_ig, β_ig)
+            Q_ξ = Normal(priors.ξ_μ, priors.ξ_σ)
+            Q_α = Normal(priors.α_μ, priors.α_σ)
+            return logpdf(Q_ξ, params_old.ξ) + logpdf(Q_ω², params_old.ω^2) + log(2 * params_old.ω) + logpdf(Q_α, params_old.α)
+        end
+    end
+    return birth_params_logpdf(SkewNormalCluster(), PriorProposal(), params_old, S_i, state, data, priors)
+end
+
 # --- FixedDistributionProposal ---
 function sample_birth_params(::SkewNormalCluster, prop::FixedDistributionProposal,
                              S_i::Vector{Int}, state::SkewNormalClusterState,
