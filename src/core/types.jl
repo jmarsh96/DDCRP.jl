@@ -174,6 +174,30 @@ struct FixedDistributionProposal <: BirthProposal
 end
 FixedDistributionProposal(d::UnivariateDistribution) = FixedDistributionProposal([d])
 
+"""
+    MixedProposal{T<:NamedTuple} <: BirthProposal
+
+Compose per-parameter birth proposals. Each cluster parameter can use a different
+proposal strategy. The `proposals` field is a NamedTuple mapping parameter names
+(e.g. `:ξ`, `:ω`, `:α`) to individual `BirthProposal` instances.
+
+Dispatches to `sample_birth_param` and `birth_param_logpdf` for each parameter,
+which are implemented per (model, parameter, proposal) combination in each model file.
+
+# Example
+```julia
+MixedProposal(
+    ξ = PriorProposal(),
+    ω = InverseGammaMomentMatch(3),
+    α = NormalMomentMatch(0.5)
+)
+```
+"""
+struct MixedProposal{T<:NamedTuple} <: BirthProposal
+    proposals::T
+end
+MixedProposal(; kwargs...) = MixedProposal(NamedTuple(kwargs))
+
 
 # ============================================================================
 # Observed Data Types

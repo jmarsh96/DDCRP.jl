@@ -46,6 +46,71 @@ Therefore: α = E[X]²/Var[X] = μ²/σ²
 
 Returns nothing if fitting fails (insufficient data, zero/negative variance).
 """
+# ============================================================================
+# Generic MixedProposal Dispatch
+# ============================================================================
+#
+# These @generated functions iterate over the NamedTuple of per-parameter
+# proposals at compile time, producing type-stable, allocation-free code.
+# Each parameter dispatches to sample_birth_param / birth_param_logpdf,
+# which are implemented per (model, Val{param}, proposal) in each model file.
+
+@generated function sample_birth_params(
+    model::LikelihoodModel,
+    prop::MixedProposal{T},
+    S_i::Vector{Int},
+    state::AbstractMCMCState,
+    data::AbstractObservedData,
+    priors::AbstractPriors
+) where {T<:NamedTuple}
+    names = fieldnames(T)
+    n = length(names)
+    vals  = [Symbol("_val_$i")  for i in 1:n]
+    logqs = [Symbol("_logq_$i") for i in 1:n]
+    stmts = Expr[]
+    for (i, name) in enumerate(names)
+        push!(stmts, quote
+            ($(vals[i]), $(logqs[i])) = sample_birth_param(
+                model, Val($(QuoteNode(name))), prop.proposals.$name,
+                S_i, state, data, priors
+            )
+        end)
+    end
+    params_expr = :(NamedTuple{$names}(($(vals...),)))
+    logq_expr   = length(logqs) == 1 ? logqs[1] : :(+($(logqs...)))
+    return quote
+        $(stmts...)
+        return $params_expr, $logq_expr
+    end
+end
+
+@generated function birth_params_logpdf(
+    model::LikelihoodModel,
+    prop::MixedProposal{T},
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::AbstractMCMCState,
+    data::AbstractObservedData,
+    priors::AbstractPriors
+) where {T<:NamedTuple}
+    names = fieldnames(T)
+    logqs = [Symbol("_logq_$i") for i in 1:length(names)]
+    stmts = Expr[]
+    for (i, name) in enumerate(names)
+        push!(stmts, quote
+            $(logqs[i]) = birth_param_logpdf(
+                model, Val($(QuoteNode(name))), prop.proposals.$name,
+                params_old.$name, S_i, state, data, priors
+            )
+        end)
+    end
+    total_expr = length(logqs) == 1 ? logqs[1] : :(+($(logqs...)))
+    return quote
+        $(stmts...)
+        return $total_expr
+    end
+end
+
 function fit_gamma_shape_moments(data)
     n = length(data)
     n < 2 && return nothing

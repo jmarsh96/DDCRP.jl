@@ -403,6 +403,175 @@
         @test isfinite(log_q_ig)
     end
 
+    # ========================================================================
+    # MixedProposal
+    # ========================================================================
+
+    @testset "MixedProposal - Constructor" begin
+        prop = MixedProposal(ξ = PriorProposal(), ω = InverseGammaMomentMatch(3), α = NormalMomentMatch(0.5))
+        @test prop isa MixedProposal
+        @test prop.proposals.ξ isa PriorProposal
+        @test prop.proposals.ω isa InverseGammaMomentMatch
+        @test prop.proposals.α isa NormalMomentMatch
+
+        # Positional (NamedTuple) constructor
+        prop2 = MixedProposal((ξ = PriorProposal(), ω = PriorProposal(), α = PriorProposal()))
+        @test prop2 isa MixedProposal
+    end
+
+    @testset "MixedProposal - SkewNormalCluster (all-prior)" begin
+        Random.seed!(42)
+        model = SkewNormalCluster()
+        priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
+        n = 15
+        y = randn(n) .+ 3.0
+        D = zeros(n, n)
+        data = ContinuousData(y, D)
+        c = collect(1:n)
+        h = abs.(randn(n))
+        ξ_dict = Dict{Vector{Int}, Float64}([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15] => 0.0)
+        ω_dict = Dict{Vector{Int}, Float64}([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15] => 1.0)
+        α_dict = Dict{Vector{Int}, Float64}([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15] => 0.0)
+        state = SkewNormalClusterState(c, h, ξ_dict, ω_dict, α_dict)
+        S_i = [1, 2, 3, 4, 5]
+
+        prop = MixedProposal(ξ = PriorProposal(), ω = PriorProposal(), α = PriorProposal())
+        params, log_q_fwd = sample_birth_params(model, prop, S_i, state, data, priors)
+
+        @test haskey(params, :ξ)
+        @test haskey(params, :ω)
+        @test haskey(params, :α)
+        @test params.ω > 0
+        @test isfinite(log_q_fwd)
+
+        # Must equal PriorProposal result (same three components summed)
+        log_q_rev = birth_params_logpdf(model, prop, params, S_i, state, data, priors)
+        @test log_q_fwd ≈ log_q_rev atol=1e-10
+
+        # MixedProposal(all-prior) == PriorProposal for SkewNormal
+        log_q_full = birth_params_logpdf(model, PriorProposal(), params, S_i, state, data, priors)
+        @test log_q_fwd ≈ log_q_full atol=1e-10
+    end
+
+    @testset "MixedProposal - SkewNormalCluster (mixed strategies)" begin
+        Random.seed!(42)
+        model = SkewNormalCluster()
+        priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
+        n = 20
+        y = randn(n)
+        D = zeros(n, n)
+        data = ContinuousData(y, D)
+        c = collect(1:n)
+        h = abs.(randn(n))
+        table_key = collect(1:n)
+        ξ_dict = Dict{Vector{Int}, Float64}(table_key => 0.0)
+        ω_dict = Dict{Vector{Int}, Float64}(table_key => 1.0)
+        α_dict = Dict{Vector{Int}, Float64}(table_key => 0.5)
+        state = SkewNormalClusterState(c, h, ξ_dict, ω_dict, α_dict)
+        S_i = [1, 2, 3, 4, 5, 6]
+
+        prop = MixedProposal(
+            ξ = NormalMomentMatch(1.0),
+            ω = InverseGammaMomentMatch(2),
+            α = NormalMomentMatch(0.5)
+        )
+        params, log_q_fwd = sample_birth_params(model, prop, S_i, state, data, priors)
+
+        @test params.ω > 0
+        @test isfinite(log_q_fwd)
+
+        log_q_rev = birth_params_logpdf(model, prop, params, S_i, state, data, priors)
+        @test log_q_fwd ≈ log_q_rev atol=1e-10
+    end
+
+    @testset "MixedProposal - SkewNormalCluster (LogNormalMomentMatch for ω)" begin
+        Random.seed!(42)
+        model = SkewNormalCluster()
+        priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
+        n = 15
+        y = randn(n)
+        D = zeros(n, n)
+        data = ContinuousData(y, D)
+        c = collect(1:n)
+        h = abs.(randn(n))
+        table_key = collect(1:n)
+        ξ_dict = Dict{Vector{Int}, Float64}(table_key => 0.0)
+        ω_dict = Dict{Vector{Int}, Float64}(table_key => 1.0)
+        α_dict = Dict{Vector{Int}, Float64}(table_key => 0.0)
+        state = SkewNormalClusterState(c, h, ξ_dict, ω_dict, α_dict)
+        S_i = [1, 2, 3, 4, 5]
+
+        prop = MixedProposal(
+            ξ = PriorProposal(),
+            ω = LogNormalMomentMatch(0.3),
+            α = PriorProposal()
+        )
+        params, log_q_fwd = sample_birth_params(model, prop, S_i, state, data, priors)
+
+        @test params.ω > 0
+        @test isfinite(log_q_fwd)
+
+        log_q_rev = birth_params_logpdf(model, prop, params, S_i, state, data, priors)
+        @test log_q_fwd ≈ log_q_rev atol=1e-10
+    end
+
+    @testset "MixedProposal - InverseGammaMomentMatch fallback (empty clusters)" begin
+        Random.seed!(42)
+        model = SkewNormalCluster()
+        priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
+        n = 10
+        y = randn(n)
+        D = zeros(n, n)
+        data = ContinuousData(y, D)
+        c = collect(1:n)
+        h = abs.(randn(n))
+        # Empty dicts — no existing clusters to fit InverseGamma to
+        ξ_dict = Dict{Vector{Int}, Float64}()
+        ω_dict = Dict{Vector{Int}, Float64}()
+        α_dict = Dict{Vector{Int}, Float64}()
+        state = SkewNormalClusterState(c, h, ξ_dict, ω_dict, α_dict)
+        S_i = [1, 2, 3]
+
+        prop = MixedProposal(ξ = PriorProposal(), ω = InverseGammaMomentMatch(3), α = PriorProposal())
+        # Should fall back to PriorProposal for ω
+        params, log_q_fwd = sample_birth_params(model, prop, S_i, state, data, priors)
+
+        @test params.ω > 0
+        @test isfinite(log_q_fwd)
+
+        log_q_rev = birth_params_logpdf(model, prop, params, S_i, state, data, priors)
+        @test log_q_fwd ≈ log_q_rev atol=1e-10
+    end
+
+    @testset "MixedProposal - α skewness fallback for small cluster" begin
+        Random.seed!(42)
+        model = SkewNormalCluster()
+        priors = SkewNormalClusterPriors(0.0, 10.0, 2.0, 1.0, 0.0, 5.0)
+        n = 10
+        y = randn(n)
+        D = zeros(n, n)
+        data = ContinuousData(y, D)
+        c = collect(1:n)
+        h = abs.(randn(n))
+        table_key = collect(1:n)
+        ξ_dict = Dict{Vector{Int}, Float64}(table_key => 0.0)
+        ω_dict = Dict{Vector{Int}, Float64}(table_key => 1.0)
+        α_dict = Dict{Vector{Int}, Float64}(table_key => 0.0)
+        state = SkewNormalClusterState(c, h, ξ_dict, ω_dict, α_dict)
+
+        prop = MixedProposal(ξ = PriorProposal(), ω = PriorProposal(), α = NormalMomentMatch(0.5))
+
+        # Small moving set (< 3): alpha estimate should fall back to 0.0
+        S_i_small = [1, 2]
+        params_small, log_q_small = sample_birth_params(model, prop, S_i_small, state, data, priors)
+        @test isfinite(log_q_small)
+
+        # Larger moving set (>= 3): uses skewness estimate
+        S_i_large = [1, 2, 3, 4, 5]
+        params_large, log_q_large = sample_birth_params(model, prop, S_i_large, state, data, priors)
+        @test isfinite(log_q_large)
+    end
+
     @testset "Edge Cases - Numerical Stability" begin
         # Test proposals with extreme parameter values
         Random.seed!(42)

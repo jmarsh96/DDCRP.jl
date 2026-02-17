@@ -45,6 +45,35 @@ Dispatches on both model type and proposal type.
 function birth_params_logpdf end
 
 """
+    sample_birth_param(model::LikelihoodModel, ::Val{param_name},
+                       proposal::BirthProposal, S_i::Vector{Int},
+                       state::AbstractMCMCState, data::AbstractObservedData,
+                       priors::AbstractPriors)
+        -> (value, log_q_forward::Float64)
+
+Sample a single cluster parameter for a birth move.
+Used by `MixedProposal` to dispatch each parameter independently.
+
+Dispatches on model type, `Val{param_name}`, and proposal type.
+Each model implements this for the (parameter, proposal) combinations it supports.
+"""
+function sample_birth_param end
+
+"""
+    birth_param_logpdf(model::LikelihoodModel, ::Val{param_name},
+                       proposal::BirthProposal, param_value,
+                       S_i::Vector{Int}, state::AbstractMCMCState,
+                       data::AbstractObservedData, priors::AbstractPriors)
+        -> Float64
+
+Log density of the per-parameter birth proposal at `param_value`.
+Used by `MixedProposal` in death moves to compute the reverse Hastings ratio.
+
+Dispatches on model type, `Val{param_name}`, and proposal type.
+"""
+function birth_param_logpdf end
+
+"""
     fixed_dim_params(model::LikelihoodModel, S_i::Vector{Int},
                      table_old::Vector{Int}, table_new::Vector{Int},
                      state::AbstractMCMCState, data::AbstractObservedData,

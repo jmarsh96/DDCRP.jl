@@ -29,7 +29,7 @@ export observations, distance_matrix, trials, has_trials, nobs, requires_trials
 # Birth proposals for RJMCMC
 export PriorProposal, ConjugateProposal, MomentMatchedProposal
 export NormalMomentMatch, InverseGammaMomentMatch, LogNormalMomentMatch
-export FixedDistributionProposal
+export FixedDistributionProposal, MixedProposal
 
 # Negative Binomial model variants
 export NBGammaPoissonGlobalRMarg, NBGammaPoissonGlobalRMargState, NBGammaPoissonGlobalRMargPriors, NBGammaPoissonGlobalRMargSamples
@@ -77,6 +77,7 @@ export initialise_state, extract_samples!, allocate_samples
 # RJMCMC interface methods
 export cluster_param_dicts
 export sample_birth_params, birth_params_logpdf, fixed_dim_params
+export sample_birth_param, birth_param_logpdf
 
 # Diagnostics
 export acceptance_rates, pairwise_acceptance_rates
