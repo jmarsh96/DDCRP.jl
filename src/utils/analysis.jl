@@ -84,6 +84,98 @@ function compute_ari_trace(c_samples::Matrix{Int}, c_true::Vector{Int})
 end
 
 """
+    compute_vi_trace(c_samples::Matrix{Int}, c_true::Vector{Int}) -> Vector{Float64}
+
+Variation of Information between each MCMC sample partition and the true partition.
+Lower is better; 0 = perfect recovery.
+
+VI(U, V) = H(U|V) + H(V|U) where H is conditional entropy, computed from the
+contingency table of the two partitions.
+"""
+function compute_vi_trace(c_samples::Matrix{Int}, c_true::Vector{Int})
+    n = size(c_samples, 2)
+    z_true = c_to_z(c_true, n)
+    bj = Dict(l => count(==(l), z_true) for l in unique(z_true))
+    vi_trace = Vector{Float64}(undef, size(c_samples, 1))
+    for t in axes(c_samples, 1)
+        z_est = c_to_z(c_samples[t, :], n)
+        ai = Dict(l => count(==(l), z_est) for l in unique(z_est))
+        nij = Dict{Tuple{Int,Int}, Int}()
+        for k in 1:n
+            key = (z_est[k], z_true[k])
+            nij[key] = get(nij, key, 0) + 1
+        end
+        vi = 0.0
+        for ((i, j), n_ij) in nij
+            vi += n_ij * (log(ai[i] / n_ij) + log(bj[j] / n_ij))
+        end
+        vi_trace[t] = vi / n
+    end
+    return vi_trace
+end
+
+"""
+    compute_kl_ppd(samples, sim; burnin, n_grid) -> Float64
+
+KL divergence KL(p_true ‖ p_ppd) from the true skew-normal mixture to the
+posterior predictive density. Uses numerical grid integration over the data range.
+
+# Arguments
+- `samples`: `SkewNormalClusterSamples` from `mcmc`
+- `sim`: Named tuple returned by `simulate_skewnormal_data` (fields: `y`, `c`, `ξ`, `ω`, `α_shape`)
+- `burnin`: Number of initial samples to discard
+- `n_grid`: Number of grid points for numerical integration (default 500)
+"""
+function compute_kl_ppd(samples::SkewNormalClusterSamples, sim;
+                        burnin::Int=0, n_grid::Int=500)
+    n = length(sim.y)
+    y_min = minimum(sim.y) - 2.0
+    y_max = maximum(sim.y) + 2.0
+    grid = collect(range(y_min, y_max; length=n_grid))
+    step = (y_max - y_min) / (n_grid - 1)
+
+    # True density: mixture weighted by cluster size
+    z_true = c_to_z(sim.c, n)
+    true_labels = unique(z_true)
+    p_true = zeros(n_grid)
+    for lab in true_labels
+        first_i = findfirst(==(lab), z_true)
+        w = count(==(lab), z_true) / n
+        for g in 1:n_grid
+            p_true[g] += w * exp(skewnormal_logpdf(grid[g], sim.ξ[first_i],
+                                                    sim.ω[first_i], sim.α_shape[first_i]))
+        end
+    end
+    p_true .= max.(p_true, 1e-300)
+
+    # Posterior predictive density: average over post-burnin samples
+    post_range = (burnin + 1):size(samples.c, 1)
+    p_est = zeros(n_grid)
+    for t in post_range
+        c_t = samples.c[t, :]
+        z_t = c_to_z(c_t, n)
+        tables_t = unique(z_t)
+        K_t = length(tables_t)
+        for lab in tables_t
+            first_i = findfirst(==(lab), z_t)
+            for g in 1:n_grid
+                p_est[g] += exp(skewnormal_logpdf(grid[g], samples.ξ[t, first_i],
+                                                   samples.ω[t, first_i], samples.α[t, first_i])) / K_t
+            end
+        end
+    end
+    p_est ./= length(post_range)
+    p_est .= max.(p_est, 1e-300)
+
+    # KL(p_true ‖ p_est) via rectangle rule
+    kl = 0.0
+    for g in 1:n_grid
+        kl += p_true[g] * log(p_true[g] / p_est[g]) * step
+    end
+    return kl
+end
+
+"""
     point_estimate_clustering(c_samples::Matrix{Int}; method=:MAP)
 
 Compute a point estimate of the clustering from posterior samples.
