@@ -34,6 +34,7 @@ mkpath("results/walkfree/figures")
 
 println("Loading GSI data...")
 df = CSV.read("GSI_cleaned.csv", DataFrame)
+filter!(row -> row.sampled, df)
 
 # Drop rows with missing values in the required columns
 covariate_cols = [:governance_issues, :lack_basic_needs, :inequality,
