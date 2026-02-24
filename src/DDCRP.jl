@@ -121,6 +121,7 @@ export simulate_gamma_data, simulate_weibull_data
 # Analysis utilities
 export calculate_n_clusters, posterior_num_cluster_distribution
 export compute_similarity_matrix, compute_ari_trace, compute_vi_trace, compute_kl_ppd
+export compute_waic, compute_lpml
 export point_estimate_clustering, posterior_summary
 
 # Sampler utilities

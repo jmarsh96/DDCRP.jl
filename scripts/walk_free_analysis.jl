@@ -62,20 +62,83 @@ println("  P range: [$(minimum(P)), $(maximum(P))]")
 # 2. DDCRP and prior specification
 # ============================================================================
 
-ddcrp_params = DDCRPParams(1.0, 1.0)   # α=1, scale=1 (relative to standardised D)
-
 # NB population priors: γ ~ Gamma(2, rate=0.1) ⟹ E[γ]=20, r ~ Gamma(1, rate=0.1)
 priors_marg   = NBPopulationRatesMargPriors(2.0, 0.1, 1.0, 0.1)
 priors_unmarg = NBPopulationRatesPriors(2.0, 0.1, 1.0, 0.1)
+
+# ============================================================================
+# 2b. Cross-validation for optimal DDCRP hyperparameters (α, scale)
+# ============================================================================
+
+α_grid     = [0.1, 0.5, 1.0, 2.0, 5.0]
+scale_grid = [0.5, 1.0, 2.0, 5.0, 10.0]
+n_cv       = 4_000
+cv_burnin  = 1_000
+
+cv_opts = MCMCOptions(
+    n_samples         = n_cv,
+    verbose           = false,
+    track_diagnostics = false,
+    prop_sds          = Dict(:λ => 0.3, :r => 0.5)
+)
+
+waic_grid = fill(Inf, length(α_grid), length(scale_grid))
+lpml_grid = fill(-Inf, length(α_grid), length(scale_grid))
+
+println("\nRunning DDCRP parameter cross-validation ($(length(α_grid)*length(scale_grid)) fits)...")
+for (ia, α) in enumerate(α_grid)
+    for (is, sc) in enumerate(scale_grid)
+        cv_params  = DDCRPParams(α, sc)
+        cv_samples = mcmc(
+            NBPopulationRatesMarg(),
+            y, P, D,
+            cv_params,
+            priors_marg,
+            ConjugateProposal();
+            opts = cv_opts
+        )
+        res = compute_waic(y, cv_samples.λ; burnin=cv_burnin)
+        waic_grid[ia, is] = res.waic
+        lpml_grid[ia, is] = compute_lpml(y, cv_samples.λ; burnin=cv_burnin)
+        @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f\n" α sc res.waic lpml_grid[ia, is]
+    end
+end
+
+best_idx  = argmin(waic_grid)
+α_opt     = α_grid[best_idx[1]]
+scale_opt = scale_grid[best_idx[2]]
+println("\nOptimal α=$α_opt, scale=$scale_opt  (WAIC=$(round(waic_grid[best_idx], digits=2)))")
+
+# Save CV grid
+cv_df = DataFrame(
+    α     = repeat(α_grid, inner=length(scale_grid)),
+    scale = repeat(scale_grid, outer=length(α_grid)),
+    waic  = vec(waic_grid),
+    lpml  = vec(lpml_grid)
+)
+CSV.write("results/walkfree/cv_grid.csv", cv_df)
+
+# CV heatmap plots
+p_cv_waic = heatmap(scale_grid, α_grid, waic_grid,
+    xlabel="scale", ylabel="α", title="WAIC surface (lower = better)",
+    color=:viridis_r, colorbar_title="WAIC")
+savefig(p_cv_waic, "results/walkfree/figures/cv_waic_surface.png")
+
+p_cv_lpml = heatmap(scale_grid, α_grid, lpml_grid,
+    xlabel="scale", ylabel="α", title="LPML surface (higher = better)",
+    color=:viridis, colorbar_title="LPML")
+savefig(p_cv_lpml, "results/walkfree/figures/cv_lpml_surface.png")
+
+ddcrp_params = DDCRPParams(α_opt, scale_opt)
 
 n_samples  = 20_000
 n_burnin   = 5_000
 
 base_opts = MCMCOptions(
-    n_samples        = n_samples,
-    verbose          = true,
+    n_samples         = n_samples,
+    verbose           = true,
     track_diagnostics = true,
-    prop_sds         = Dict(:λ => 0.3, :r => 0.5)
+    prop_sds          = Dict(:λ => 0.3, :r => 0.5)
 )
 
 # ============================================================================
@@ -258,4 +321,6 @@ rows = DataFrame(
 
 CSV.write("results/walkfree/summary_metrics.csv", rows)
 println("Summary metrics saved to results/walkfree/summary_metrics.csv")
+println("CV grid saved to results/walkfree/cv_grid.csv")
+println("All figures in results/walkfree/figures/")
 println("\nDone.")

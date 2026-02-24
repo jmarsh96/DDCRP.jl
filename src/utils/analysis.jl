@@ -258,3 +258,75 @@ function countmap(x)
     end
     return counts
 end
+
+"""
+    compute_waic(y, λ_samples; burnin=0) -> NamedTuple
+
+Watanabe-Akaike Information Criterion for a Poisson observation model.
+Lower WAIC indicates better out-of-sample predictive fit.
+
+The observation model is `y_i | λ_i ~ Poisson(λ_i)`, so
+
+    lppd   = Σ_i log E_s[ p(y_i | λ_s_i) ]
+    p_WAIC = Σ_i Var_s[ log p(y_i | λ_s_i) ]
+    WAIC   = -2 (lppd - p_WAIC)
+
+# Arguments
+- `y::AbstractVector`: observed counts (length n)
+- `λ_samples::AbstractMatrix`: posterior samples, shape (n_samples × n)
+- `burnin::Int=0`: rows to discard before computing
+
+# Returns
+`NamedTuple` with fields `waic`, `lppd`, `p_waic`, `waic_i` (per-obs contributions)
+"""
+function compute_waic(y::AbstractVector, λ_samples::AbstractMatrix; burnin::Int=0)
+    n   = length(y)
+    idx = (burnin + 1):size(λ_samples, 1)
+    lppd   = 0.0
+    p_waic = 0.0
+    waic_i = Vector{Float64}(undef, n)
+    for i in 1:n
+        yi   = Float64(y[i])
+        ll_i = [-λ_samples[s, i] + yi * log(λ_samples[s, i]) - loggamma(yi + 1.0)
+                for s in idx]
+        max_ll  = maximum(ll_i)
+        lppd_i  = max_ll + log(mean(exp.(ll_i .- max_ll)))
+        pwaic_i = var(ll_i)
+        waic_i[i] = -2.0 * (lppd_i - pwaic_i)
+        lppd   += lppd_i
+        p_waic += pwaic_i
+    end
+    w = -2.0 * (lppd - p_waic)
+    return (waic=w, lppd=lppd, p_waic=p_waic, waic_i=waic_i)
+end
+
+"""
+    compute_lpml(y, λ_samples; burnin=0) -> Float64
+
+Log Pseudo-Marginal Likelihood via the Conditional Predictive Ordinate (CPO).
+Higher LPML indicates better predictive fit.
+
+    log CPO_i = -log E_s[ 1 / p(y_i | λ_s_i) ]   (harmonic-mean estimator)
+    LPML      = Σ_i log CPO_i
+
+Uses log-sum-exp for numerical stability.
+
+# Arguments
+- `y::AbstractVector`: observed counts (length n)
+- `λ_samples::AbstractMatrix`: posterior samples, shape (n_samples × n)
+- `burnin::Int=0`: rows to discard before computing
+"""
+function compute_lpml(y::AbstractVector, λ_samples::AbstractMatrix; burnin::Int=0)
+    n    = length(y)
+    idx  = (burnin + 1):size(λ_samples, 1)
+    lpml = 0.0
+    for i in 1:n
+        yi   = Float64(y[i])
+        ll_i = [-λ_samples[s, i] + yi * log(λ_samples[s, i]) - loggamma(yi + 1.0)
+                for s in idx]
+        neg_ll     = -ll_i
+        max_neg_ll = maximum(neg_ll)
+        lpml      += -(max_neg_ll + log(mean(exp.(neg_ll .- max_neg_ll))))
+    end
+    return lpml
+end
