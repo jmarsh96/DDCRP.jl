@@ -309,3 +309,65 @@ function simulate_gamma_data(n::Int,
 
     return (y=y, α_shape=α_shape, β=β, c=c, tables=tables, x=x, D=D)
 end
+
+"""
+    simulate_weibull_data(n, cluster_shapes, cluster_rates; α=0.1, scale=1.0, x=nothing)
+
+Simulate Weibull data with DDCRP clustering.
+
+# Arguments
+- `n`: Number of observations
+- `cluster_shapes`: True cluster shape parameters (k_c), positive
+- `cluster_rates`: True cluster rate parameters (λ_c), positive (scale = 1/λ)
+- `α`: DDCRP concentration parameter
+- `scale`: DDCRP distance scale
+- `x`: Optional pre-specified 1D covariate vector of length `n`. If `nothing`
+  (default), positions are drawn uniformly from [0, 1].
+
+# Returns
+Named tuple with:
+- `y`: Observed positive continuous values
+- `k`: Shape per observation
+- `λ`: Rate per observation
+- `c`: Customer assignments
+- `tables`: Table structure
+- `x`: Covariate (used to construct distance)
+- `D`: Distance matrix
+"""
+function simulate_weibull_data(n::Int,
+                                cluster_shapes::Vector{Float64},
+                                cluster_rates::Vector{Float64};
+                                α::Float64=0.1, scale::Float64=1.0,
+                                x::Union{Nothing, Vector{Float64}}=nothing)
+    if isnothing(x)
+        x = rand(n)
+    else
+        length(x) == n || throw(ArgumentError("x must have length n=$n, got $(length(x))"))
+    end
+    D = construct_distance_matrix(x)
+
+    c = simulate_ddcrp(D; α=α, scale=scale)
+    tables = table_vector(c)
+    n_clusters = length(tables)
+
+    # Assign cluster parameters (recycle if fewer provided than clusters)
+    k_clusters = [cluster_shapes[mod1(j, length(cluster_shapes))] for j in 1:n_clusters]
+    λ_clusters = [cluster_rates[mod1(j, length(cluster_rates))] for j in 1:n_clusters]
+
+    # Assign parameters to each observation
+    k = zeros(n)
+    λ = zeros(n)
+
+    for (j, table) in enumerate(tables)
+        for i in table
+            k[i] = k_clusters[j]
+            λ[i] = λ_clusters[j]
+        end
+    end
+
+    # Simulate observations from Weibull(k, 1/λ)
+    # Julia's Weibull uses scale parameterisation: Weibull(shape, scale) where scale = 1/rate
+    y = [rand(Weibull(k[i], 1/λ[i])) for i in 1:n]
+
+    return (y=y, k=k, λ=λ, c=c, tables=tables, x=x, D=D)
+end

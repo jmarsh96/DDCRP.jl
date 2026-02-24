@@ -169,8 +169,8 @@ function mcmc(model::LikelihoodModel, y::AbstractVector, N::Union{Int, AbstractV
     return mcmc(model, data, ddcrp_params, priors, proposal; opts=opts)
 end
 
-"""Convenience: ContinuousData models (SkewNormal, Gamma) with separate y, D."""
-function mcmc(model::Union{SkewNormalModel, GammaModel}, y::AbstractVector{<:Real},
+"""Convenience: ContinuousData models (SkewNormal, Gamma, Weibull) with separate y, D."""
+function mcmc(model::Union{SkewNormalModel, GammaModel, WeibullModel}, y::AbstractVector{<:Real},
               D::AbstractMatrix, ddcrp_params::DDCRPParams, priors::AbstractPriors,
               proposal::BirthProposal = PriorProposal(); opts::MCMCOptions = MCMCOptions())
     data = ContinuousData(y, D)

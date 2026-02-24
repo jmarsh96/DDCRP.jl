@@ -59,6 +59,12 @@ export skewnormal_logpdf, delta_from_alpha, sample_h_conditional
 export estimate_skewness, alpha_from_skewness, estimate_skewnormal_params
 export update_h!, update_ξ!, update_ω!, update_α!
 
+# Weibull model variants
+export WeibullModel, WeibullCluster
+export WeibullClusterState, WeibullClusterPriors, WeibullClusterSamples
+export weibull_logpdf, fit_weibull_shape_moments
+export update_k!, update_λ!
+
 # DDCRP parameters
 export DDCRPParams
 
@@ -104,7 +110,7 @@ export likelihood_contribution, negbin_logpdf, logbinomial
 # Simulation utilities
 export simulate_m, simulate_λ
 export simulate_negbin_data, simulate_poisson_data, simulate_binomial_data, simulate_skewnormal_data
-export simulate_gamma_data
+export simulate_gamma_data, simulate_weibull_data
 
 # Analysis utilities
 export calculate_n_clusters, posterior_num_cluster_distribution
@@ -161,6 +167,10 @@ include("models/skew_normal/skew_normal_cluster.jl")
 
 # Model implementations - Gamma variants
 include("models/gamma/gamma_cluster_shape_marg.jl")
+
+# Model implementations - Weibull variants
+include("models/weibull/weibull_utils.jl")
+include("models/weibull/weibull_cluster.jl")
 
 # Samplers (depends on model types for specialized methods)
 include("samplers/gibbs.jl")

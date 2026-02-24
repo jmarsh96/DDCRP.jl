@@ -50,6 +50,14 @@ Concrete subtypes: `GammaClusterShapeMarg`
 """
 abstract type GammaModel <: LikelihoodModel end
 
+"""
+    WeibullModel <: LikelihoodModel
+
+Abstract type for Weibull likelihood models.
+Concrete subtypes: `WeibullCluster`
+"""
+abstract type WeibullModel <: LikelihoodModel end
+
 # ============================================================================
 # Abstract Types for State, Priors, and Samples
 # ============================================================================

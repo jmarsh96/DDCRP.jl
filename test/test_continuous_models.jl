@@ -473,4 +473,276 @@
         @test isfinite(contrib_extreme)
     end
 
+    # ========================================================================
+    # WeibullCluster - Weibull model with cluster-specific shape and rate
+    # ========================================================================
+
+    @testset "WeibullCluster - State Initialization" begin
+        Random.seed!(123)
+        n = 20
+        data_sim = simulate_weibull_data(n, [2.0, 4.0], [1.0, 2.0]; α=0.1, scale=5.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        ddcrp_params = DDCRPParams(0.1, 5.0)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        state = initialise_state(WeibullCluster(), data, ddcrp_params, priors)
+
+        @test state isa WeibullClusterState
+        @test length(state.c) == n
+        @test all(1 <= state.c[i] <= n for i in 1:n)
+        @test !isempty(state.k_dict)
+        @test !isempty(state.λ_dict)
+
+        # Check all observations are covered
+        tables = table_vector(state.c)
+        all_obs = sort(vcat(tables...))
+        @test all_obs == 1:n
+
+        # Check k and λ parameters are positive
+        for k_val in values(state.k_dict)
+            @test k_val > 0
+        end
+        for λ_val in values(state.λ_dict)
+            @test λ_val > 0
+        end
+
+        # Check dict keys are sorted
+        for table in keys(state.k_dict)
+            @test issorted(table)
+        end
+        for table in keys(state.λ_dict)
+            @test issorted(table)
+        end
+
+        # k_dict and λ_dict should have the same keys
+        @test Set(keys(state.k_dict)) == Set(keys(state.λ_dict))
+
+        # Non-positive data should error
+        y_negative = [-1.0, 2.0, 3.0]
+        D_neg = zeros(3, 3)
+        data_neg = ContinuousData(y_negative, D_neg)
+        @test_throws AssertionError initialise_state(WeibullCluster(), data_neg, ddcrp_params, priors)
+
+        y_zero = [0.0, 2.0, 3.0]
+        data_zero = ContinuousData(y_zero, D_neg)
+        @test_throws AssertionError initialise_state(WeibullCluster(), data_zero, ddcrp_params, priors)
+    end
+
+    @testset "WeibullCluster - Table Contribution" begin
+        Random.seed!(123)
+        n = 15
+        data_sim = simulate_weibull_data(n, [2.0], [1.0]; α=0.05, scale=10.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        ddcrp_params = DDCRPParams(0.05, 10.0)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        state = initialise_state(WeibullCluster(), data, ddcrp_params, priors)
+        tables = table_vector(state.c)
+
+        # Table contribution should be finite and negative (log-probability)
+        for table in tables
+            contrib = table_contribution(WeibullCluster(), table, state, data, priors)
+            @test isfinite(contrib)
+            @test contrib < 0
+        end
+
+        # Test with single observation cluster
+        c_single = collect(1:n)
+        k_dict_single = Dict{Vector{Int}, Float64}()
+        λ_dict_single = Dict{Vector{Int}, Float64}()
+        for i in 1:n
+            k_dict_single[[i]] = 2.0
+            λ_dict_single[[i]] = 1.0
+        end
+        state_single = WeibullClusterState(c_single, k_dict_single, λ_dict_single)
+
+        for i in 1:n
+            contrib = table_contribution(WeibullCluster(), [i], state_single, data, priors)
+            @test isfinite(contrib)
+        end
+
+        # Test with all in one cluster
+        c_all = ones(Int, n)
+        all_idx = collect(1:n)
+        k_dict_all = Dict{Vector{Int}, Float64}(all_idx => 2.0)
+        λ_dict_all = Dict{Vector{Int}, Float64}(all_idx => 1.0)
+        state_all = WeibullClusterState(c_all, k_dict_all, λ_dict_all)
+        contrib_all = table_contribution(WeibullCluster(), all_idx, state_all, data, priors)
+        @test isfinite(contrib_all)
+    end
+
+    @testset "WeibullCluster - Log-likelihood Correctness" begin
+        # Manually verify log-likelihood for known parameters
+        Random.seed!(123)
+        y = [1.0, 2.0, 3.0, 4.0]
+        D = zeros(4, 4)
+        data = ContinuousData(y, D)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        table = [1, 2, 3, 4]
+        k = 2.0
+        λ = 1.0
+        k_dict = Dict{Vector{Int}, Float64}(table => k)
+        λ_dict = Dict{Vector{Int}, Float64}(table => λ)
+        c = ones(Int, 4)
+        state = WeibullClusterState(c, k_dict, λ_dict)
+
+        # Manual computation: log L = n*log(k) + n*k*log(λ) + (k-1)*Σlog(y) - λ^k * Σy^k
+        n = 4
+        expected_loglik = n * log(k) + n * k * log(λ) + (k - 1) * sum(log, y) - λ^k * sum(x -> x^k, y)
+        expected_logprior_k = logpdf(Gamma(priors.k_a, 1/priors.k_b), k)
+        expected_logprior_λ = logpdf(Gamma(priors.λ_a, 1/priors.λ_b), λ)
+        expected = expected_loglik + expected_logprior_k + expected_logprior_λ
+
+        contrib = table_contribution(WeibullCluster(), table, state, data, priors)
+        @test isapprox(contrib, expected; atol=1e-10)
+    end
+
+    @testset "WeibullCluster - Posterior Calculation" begin
+        Random.seed!(123)
+        n = 12
+        data_sim = simulate_weibull_data(n, [2.0, 4.0], [1.0, 2.0]; α=0.1, scale=5.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        ddcrp_params = DDCRPParams(0.1, 5.0)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        state = initialise_state(WeibullCluster(), data, ddcrp_params, priors)
+        log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, data_sim.D)
+
+        post = posterior(WeibullCluster(), data, state, priors, log_DDCRP)
+        @test isfinite(post)
+
+        check_posterior_components(WeibullCluster(), state, data, priors, log_DDCRP)
+    end
+
+    @testset "WeibullCluster - Shape Parameter Updates (k)" begin
+        Random.seed!(123)
+        n = 10
+        data_sim = simulate_weibull_data(n, [2.0], [1.0]; α=0.05, scale=10.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        all_idx = collect(1:n)
+        c = ones(Int, n)
+        k_dict = Dict{Vector{Int}, Float64}(all_idx => 2.0)
+        λ_dict = Dict{Vector{Int}, Float64}(all_idx => 1.0)
+        state = WeibullClusterState(c, k_dict, λ_dict)
+
+        update_k!(WeibullCluster(), state, data, priors; prop_sd=0.5)
+
+        # Positivity must be maintained
+        @test !isempty(state.k_dict)
+        for k_val in values(state.k_dict)
+            @test k_val > 0
+        end
+
+        # Multiple updates should not crash
+        for _ in 1:10
+            update_k!(WeibullCluster(), state, data, priors; prop_sd=0.3)
+            @test all(k > 0 for k in values(state.k_dict))
+        end
+    end
+
+    @testset "WeibullCluster - Rate Parameter Updates (λ)" begin
+        Random.seed!(123)
+        n = 10
+        data_sim = simulate_weibull_data(n, [2.0], [1.0]; α=0.05, scale=10.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        all_idx = collect(1:n)
+        c = ones(Int, n)
+        k_dict = Dict{Vector{Int}, Float64}(all_idx => 2.0)
+        λ_dict = Dict{Vector{Int}, Float64}(all_idx => 1.0)
+        state = WeibullClusterState(c, k_dict, λ_dict)
+
+        update_λ!(WeibullCluster(), state, data, priors; prop_sd=0.5)
+
+        # Positivity must be maintained
+        @test !isempty(state.λ_dict)
+        for λ_val in values(state.λ_dict)
+            @test λ_val > 0
+        end
+
+        # Multiple updates should not crash
+        for _ in 1:10
+            update_λ!(WeibullCluster(), state, data, priors; prop_sd=0.3)
+            @test all(λ > 0 for λ in values(state.λ_dict))
+        end
+    end
+
+    @testset "WeibullCluster - Edge Cases" begin
+        Random.seed!(123)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        # Single observation cluster
+        y_single = [2.5]
+        D_single = zeros(1, 1)
+        data_single = ContinuousData(y_single, D_single)
+        c_single = [1]
+        k_dict_single = Dict{Vector{Int}, Float64}([1] => 2.0)
+        λ_dict_single = Dict{Vector{Int}, Float64}([1] => 1.0)
+        state_single = WeibullClusterState(c_single, k_dict_single, λ_dict_single)
+
+        contrib_single = table_contribution(WeibullCluster(), [1], state_single, data_single, priors)
+        @test isfinite(contrib_single)
+
+        # Very small shape (heavy tail)
+        y_small_k = rand(Weibull(0.5, 2.0), 10)
+        D_10 = zeros(10, 10)
+        data_small_k = ContinuousData(y_small_k, D_10)
+        c_10 = ones(Int, 10)
+        all_10 = collect(1:10)
+        k_dict_small = Dict{Vector{Int}, Float64}(all_10 => 0.5)
+        λ_dict_small = Dict{Vector{Int}, Float64}(all_10 => 0.5)
+        state_small_k = WeibullClusterState(c_10, k_dict_small, λ_dict_small)
+
+        contrib_small_k = table_contribution(WeibullCluster(), all_10, state_small_k, data_small_k, priors)
+        @test isfinite(contrib_small_k)
+
+        # Large shape (concentrating around mode)
+        y_large_k = rand(Weibull(10.0, 1.0), 10)
+        data_large_k = ContinuousData(y_large_k, D_10)
+        k_dict_large = Dict{Vector{Int}, Float64}(all_10 => 10.0)
+        λ_dict_large = Dict{Vector{Int}, Float64}(all_10 => 1.0)
+        state_large_k = WeibullClusterState(c_10, k_dict_large, λ_dict_large)
+
+        contrib_large_k = table_contribution(WeibullCluster(), all_10, state_large_k, data_large_k, priors)
+        @test isfinite(contrib_large_k)
+
+        # Invalid parameters return -Inf
+        k_dict_bad = Dict{Vector{Int}, Float64}([1] => -1.0)
+        λ_dict_bad = Dict{Vector{Int}, Float64}([1] => 1.0)
+        state_bad = WeibullClusterState([1], k_dict_bad, λ_dict_bad)
+        @test table_contribution(WeibullCluster(), [1], state_bad, data_single, priors) == -Inf
+    end
+
+    @testset "WeibullCluster - MCMC Integration" begin
+        Random.seed!(42)
+        n = 30
+        data_sim = simulate_weibull_data(n, [2.0, 5.0], [1.0, 2.0]; α=0.05, scale=10.0)
+        data = ContinuousData(data_sim.y, data_sim.D)
+        ddcrp_params = DDCRPParams(0.05, 10.0)
+        priors = WeibullClusterPriors(2.0, 1.0, 2.0, 1.0)
+
+        opts = MCMCOptions(
+            n_samples = 200,
+            verbose = false,
+            infer_params = Dict(:k => true, :λ => true, :c => true),
+            track_diagnostics = false
+        )
+
+        samples = mcmc(WeibullCluster(), data_sim.y, data_sim.D, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+        @test samples isa WeibullClusterSamples
+        @test size(samples.c) == (200, n)
+        @test size(samples.k) == (200, n)
+        @test size(samples.λ) == (200, n)
+        @test length(samples.logpost) == 200
+
+        @test all(isfinite.(samples.logpost))
+        @test all(samples.k .> 0)
+        @test all(samples.λ .> 0)
+    end
+
 end
