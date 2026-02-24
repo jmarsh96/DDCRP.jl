@@ -292,6 +292,162 @@ Random.seed!(43)
         end
     end
 
+    # ========================================================================
+    # NBPopulationRatesMarg - Marginalised with population offsets
+    # ========================================================================
+    @testset "NBPopulationRatesMarg" begin
+        model = NBPopulationRatesMarg()
+        priors = NBPopulationRatesMargPriors(2.0, 0.1, 1.0, 0.1)
+
+        # Population/exposure data (integer populations, count data)
+        E = rand(100:10_000, n)
+        y_pop = rand.(Poisson.(E .* 0.01))  # ~1% prevalence
+        data_pop = CountDataWithTrials(y_pop, E, D)
+
+        @testset "State Initialization" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+
+            @test state isa NBPopulationRatesMargState
+            @test length(state.c) == n
+            @test length(state.λ) == n
+            @test all(state.λ .> 0)
+            @test state.r > 0
+            # Marginalised model: no γ_dict
+            @test !hasproperty(state, :γ_dict)
+        end
+
+        @testset "Table Contribution" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            tables = table_vector(state.c)
+
+            for table in tables
+                contrib = table_contribution(model, table, state, data_pop, priors)
+                @test isfinite(contrib)
+            end
+        end
+
+        @testset "Posterior" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
+
+            post = posterior(model, data_pop, state, priors, log_DDCRP)
+            @test isfinite(post)
+        end
+
+        @testset "Parameter Updates" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            tables = table_vector(state.c)
+            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
+            opts = MCMCOptions()
+
+            update_params!(model, state, data_pop, priors, tables, log_DDCRP, opts)
+            @test all(state.λ .> 0)
+            @test state.r > 0
+        end
+
+        @testset "MCMC Integration" begin
+            opts = MCMCOptions(n_samples=200, verbose=false, track_diagnostics=false)
+            samples = mcmc(model, y_pop, E, D, ddcrp_params, priors, ConjugateProposal(); opts=opts)
+
+            @test samples isa NBPopulationRatesMargSamples
+            @test size(samples.c) == (200, n)
+            @test size(samples.λ) == (200, n)
+            @test length(samples.r) == 200
+            @test all(isfinite.(samples.logpost))
+        end
+    end
+
+    # ========================================================================
+    # NBPopulationRates - Non-marginalised with population offsets
+    # ========================================================================
+    @testset "NBPopulationRates" begin
+        model = NBPopulationRates()
+        priors = NBPopulationRatesPriors(2.0, 0.1, 1.0, 0.1)
+
+        # Same population/exposure data as above
+        E = rand(100:10_000, n)
+        y_pop = rand.(Poisson.(E .* 0.01))
+        data_pop = CountDataWithTrials(y_pop, E, D)
+
+        @testset "State Initialization" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+
+            @test state isa NBPopulationRatesState
+            @test length(state.c) == n
+            @test length(state.λ) == n
+            @test all(state.λ .> 0)
+            @test state.r > 0
+            @test !isempty(state.γ_dict)
+            @test all(v > 0 for v in values(state.γ_dict))
+        end
+
+        @testset "Table Contribution" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+
+            for table in keys(state.γ_dict)
+                contrib = table_contribution(model, table, state, data_pop, priors)
+                @test isfinite(contrib)
+            end
+        end
+
+        @testset "Posterior" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
+
+            post = posterior(model, data_pop, state, priors, log_DDCRP)
+            @test isfinite(post)
+        end
+
+        @testset "Parameter Updates (Conjugate Gibbs)" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            tables = table_vector(state.c)
+            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
+            opts = MCMCOptions()
+
+            γ_before = Dict(k => v for (k, v) in state.γ_dict)
+
+            update_params!(model, state, data_pop, priors, tables, log_DDCRP, opts)
+            @test all(state.λ .> 0)
+            @test state.r > 0
+            @test all(v > 0 for v in values(state.γ_dict))
+            # Conjugate Gibbs should change γ values
+            @test any(state.γ_dict[k] != γ_before[k] for k in keys(γ_before))
+        end
+
+        @testset "RJMCMC Interface" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+
+            # cluster_param_dicts
+            dicts = cluster_param_dicts(state)
+            @test haskey(dicts, :γ)
+            @test dicts.γ === state.γ_dict
+
+            # sample_birth_params with PriorProposal
+            tables = table_vector(state.c)
+            S_i = tables[1]  # Use first table as moving set
+            params_new, log_q = sample_birth_params(model, PriorProposal(), S_i, state, data_pop, priors)
+            @test haskey(params_new, :γ)
+            @test params_new.γ > 0
+            @test isfinite(log_q)
+
+            # birth_params_logpdf (reverse move density)
+            log_q_rev = birth_params_logpdf(model, PriorProposal(), params_new, S_i, state, data_pop, priors)
+            @test isfinite(log_q_rev)
+        end
+
+        @testset "MCMC Integration" begin
+            opts = MCMCOptions(n_samples=200, verbose=false, track_diagnostics=false)
+            samples = mcmc(model, y_pop, E, D, ddcrp_params, priors, PriorProposal(); opts=opts)
+
+            @test samples isa NBPopulationRatesSamples
+            @test size(samples.c) == (200, n)
+            @test size(samples.λ) == (200, n)
+            @test size(samples.γ) == (200, n)
+            @test length(samples.r) == 200
+            @test all(isfinite.(samples.logpost))
+        end
+    end
+
 end # Negative Binomial Models
 
 # ============================================================================

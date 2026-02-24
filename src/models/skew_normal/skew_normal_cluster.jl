@@ -130,10 +130,16 @@ end
 
 cluster_param_dicts(state::SkewNormalClusterState) = (ξ = state.ξ_dict, ω = state.ω_dict, α = state.α_dict)
 
-# ── WeightedMean overrides for ω and α ───────────────────────────────────────
+# ── WeightedMean overrides for ξ, ω, and α ───────────────────────────────────
 # The generic WeightedMean uses ȳ_Si (observation mean) as the summary
-# statistic for every parameter, which is meaningless for ω (scale) and α
-# (shape) and can produce negative ω values (causing DomainError in log).
+# statistic for every parameter AND enforces a positivity guard
+# (param_depl_new <= 0 → lpr = -Inf) that was designed for positive-only
+# parameters (λ, ω). This causes two problems for SkewNormal:
+#
+# ξ override: ξ ∈ ℝ is unconstrained — clusters with negative ξ (e.g. ξ ≈ -10)
+#   always produce ξ_depl_new ≤ 0, so the generic guard incorrectly rejects
+#   every fixed-dim move out of those clusters, freezing assignments and
+#   collapsing ARI to near zero.  Fix: same arithmetic, no positivity check.
 #
 # ω override: work in variance (ω²) domain using the sample variance of S_i
 #   observations as the summary statistic. This keeps ω_aug always positive
@@ -141,6 +147,26 @@ cluster_param_dicts(state::SkewNormalClusterState) = (ξ = state.ξ_dict, ω = s
 #
 # α override: use a weighted mean of the existing cluster α values, since
 #   there is no simple sufficient statistic for α from raw observations.
+
+function fixed_dim_param(::SkewNormalCluster, ::Val{:ξ}, ::WeightedMean,
+                         S_i::Vector{Int}, table_depl::Vector{Int}, table_aug::Vector{Int},
+                         state::SkewNormalClusterState, data::ContinuousData,
+                         _priors::SkewNormalClusterPriors)
+    ξ_depl = state.ξ_dict[table_depl]
+    ξ_aug  = state.ξ_dict[table_aug]
+    ȳ_Si   = mean(view(observations(data), S_i))
+    n_depl = length(table_depl)
+    n_aug  = length(table_aug)
+    n_Si   = length(S_i)
+
+    ξ_aug_new   = (n_aug * ξ_aug + n_Si * ȳ_Si) / (n_aug + n_Si)
+    n_remaining = n_depl - n_Si
+    ξ_depl_new  = n_remaining > 0 ?
+        (n_depl * ξ_depl - n_Si * ȳ_Si) / n_remaining :
+        ξ_depl  # cluster becomes empty; value unused
+
+    return ξ_depl_new, ξ_aug_new, 0.0  # no positivity check — ξ ∈ ℝ
+end
 
 function fixed_dim_param(::SkewNormalCluster, ::Val{:ω}, ::WeightedMean,
                          S_i::Vector{Int}, table_depl::Vector{Int}, table_aug::Vector{Int},
