@@ -5,15 +5,14 @@
 """
     MCMCOptions
 
-Configuration for MCMC sampling. Birth proposals are passed directly
-to `mcmc` as a `BirthProposal` argument, not through options.
+Configuration for MCMC sampling. Birth proposals and fixed-dimension proposals
+are passed directly to `mcmc` as arguments, not through options.
 
 # Fields
 - `n_samples::Int`: Number of MCMC iterations (default: 10000)
 - `verbose::Bool`: Print progress (default: false)
 - `infer_params::Dict{Symbol, Bool}`: Which parameters to infer (default: all true)
 - `prop_sds::Dict{Symbol, Float64}`: Proposal standard deviations for MH parameter updates
-- `fixed_dim_mode::Symbol`: Fixed-dimension mode for RJMCMC (:none, :weighted_mean, :resample_posterior)
 - `track_diagnostics::Bool`: Track acceptance rates (default: true)
 - `track_pairwise::Bool`: Track pairwise proposals (default: false)
 """
@@ -22,7 +21,6 @@ struct MCMCOptions
     verbose::Bool
     infer_params::Dict{Symbol, Bool}
     prop_sds::Dict{Symbol, Float64}
-    fixed_dim_mode::Symbol
     track_diagnostics::Bool
     track_pairwise::Bool
 end
@@ -50,7 +48,6 @@ function MCMCOptions(;
         :ω => 0.3,
         :α => 0.5
     ),
-    fixed_dim_mode::Symbol = :none,
     track_diagnostics::Bool = true,
     track_pairwise::Bool = false,
 )
@@ -59,7 +56,6 @@ function MCMCOptions(;
         verbose,
         infer_params,
         prop_sds,
-        fixed_dim_mode,
         track_diagnostics,
         track_pairwise,
     )

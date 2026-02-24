@@ -206,6 +206,77 @@ struct MixedProposal{T<:NamedTuple} <: BirthProposal
 end
 MixedProposal(; kwargs...) = MixedProposal(NamedTuple(kwargs))
 
+# ============================================================================
+# Fixed-Dimension Proposals for RJMCMC
+# ============================================================================
+
+"""
+    FixedDimensionProposal
+
+Abstract supertype for RJMCMC fixed-dimension proposal distributions.
+Controls how cluster parameters are updated when the moving set S_i transfers
+between existing clusters without changing the total number of clusters K.
+"""
+abstract type FixedDimensionProposal end
+
+"""
+    NoUpdate <: FixedDimensionProposal
+
+Keep existing cluster parameters unchanged during fixed-dimension moves.
+The acceptance probability depends solely on the posterior ratio.
+"""
+struct NoUpdate <: FixedDimensionProposal end
+
+"""
+    WeightedMean <: FixedDimensionProposal
+
+Deterministically update parameters as weighted averages of cluster contents.
+For a parameter ρ, the augmented cluster gets a weighted mean incorporating
+the moving set, and the depleted cluster is adjusted accordingly.
+The update is deterministic (lpr = 0) so the Jacobian is unity.
+"""
+struct WeightedMean <: FixedDimensionProposal end
+
+"""
+    Resample{P<:BirthProposal} <: FixedDimensionProposal
+
+Stochastically resample cluster parameters for the modified clusters using
+an inner `BirthProposal`. Reuses `sample_birth_param`/`birth_param_logpdf`
+applied to the new cluster memberships (remaining depleted, augmented).
+The Hastings ratio accounts for the forward and reverse proposal densities.
+
+# Fields
+- `proposal::P`: The birth proposal to use for resampling
+
+# Example
+```julia
+Resample(NormalMomentMatch(0.5, 0.3, 0.5))  # moment-matched resampling
+Resample()                                    # prior-based resampling
+```
+"""
+struct Resample{P<:BirthProposal} <: FixedDimensionProposal
+    proposal::P
+end
+Resample() = Resample(PriorProposal())
+
+"""
+    MixedFixedDim{T<:NamedTuple} <: FixedDimensionProposal
+
+Compose per-parameter fixed-dimension proposals. Each cluster parameter can use
+a different update strategy. The `proposals` field is a NamedTuple mapping
+parameter names to individual `FixedDimensionProposal` instances.
+Unspecified parameters default to `NoUpdate`.
+
+# Example
+```julia
+MixedFixedDim(ξ = WeightedMean(), ω = NoUpdate(), α = NoUpdate())
+```
+"""
+struct MixedFixedDim{T<:NamedTuple} <: FixedDimensionProposal
+    proposals::T
+end
+MixedFixedDim(; kwargs...) = MixedFixedDim(NamedTuple(kwargs))
+
 
 # ============================================================================
 # Observed Data Types

@@ -239,7 +239,7 @@ end
         n_births_proposed = 0
         for _ in 1:100
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
             if move_type == :birth
                 n_births_proposed += 1
             end
@@ -280,7 +280,7 @@ end
 
         # Try birth move on customer 3
         for _ in 1:50
-            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), 3, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), 3, state, data, priors, proposal, NoUpdate(), log_DDCRP)
             if move_type == :birth && accepted
                 # Birth accepted, should have more entries
                 @test length(state.m_dict) >= n_entries_before
@@ -350,7 +350,7 @@ end
         n_deaths = 0
         for _ in 1:100
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
             if move_type == :death && accepted
                 n_deaths += 1
             end
@@ -388,7 +388,7 @@ end
         # Try death moves
         for _ in 1:50
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
             if move_type == :death && accepted
                 # Death accepted, should have fewer entries
                 @test length(state.m_dict) <= n_entries_before
@@ -450,13 +450,12 @@ end
         priors = NBGammaPoissonGlobalRPriors(2.0, 10.0, 2.0, 1.0)
         proposal = PriorProposal()
         log_DDCRP = precompute_log_ddcrp(decay, 0.1, 10.0, D)
-        opts = MCMCOptions()
 
         # Moves within a single cluster should not change cluster count
         # (birth moves may be proposed but should be rejected since no new cluster needed)
         for _ in 1:10
             i = rand(2:n)  # Not customer 1 (table representative)
-            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
 
             # m_dict should not grow (births are rejected in single-cluster scenario)
             @test length(state.m_dict) == 1
@@ -484,12 +483,11 @@ end
         priors = NBGammaPoissonGlobalRPriors(2.0, 10.0, 2.0, 1.0)
         proposal = PriorProposal()
         log_DDCRP = precompute_log_ddcrp(decay, 0.1, 10.0, D)
-        opts = MCMCOptions(fixed_dim_mode=:none)
 
         n_fixed_diff = 0
         for _ in 1:20
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
             if move_type == :fixed_diff
                 n_fixed_diff += 1
                 # Number of clusters should stay same
@@ -517,14 +515,13 @@ end
         y = rand(Poisson(5), n)
         data = CountData(y, D)
         priors = NBGammaPoissonGlobalRPriors(2.0, 10.0, 2.0, 1.0)
-        opts = MCMCOptions(fixed_dim_mode=:weighted_mean)
 
         S_i = [2, 3]
         table_old = sort(tables[1])
         table_new = sort(tables[2])
 
         params_depl, params_aug, lpr = fixed_dim_params(
-            NBGammaPoissonGlobalR(), S_i, table_old, table_new, state, data, priors, opts
+            NBGammaPoissonGlobalR(), WeightedMean(), S_i, table_old, table_new, state, data, priors
         )
 
         @test params_depl isa NamedTuple
@@ -563,7 +560,7 @@ end
         # Run multiple moves
         for _ in 1:50
             i = rand(1:n)
-            update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            update_c_rjmcmc!(model, i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
 
             # Check state consistency after each move
             check_state_consistency(model, state, data)
@@ -594,7 +591,7 @@ end
         # Force deaths
         for _ in 1:20
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(NBGammaPoissonGlobalR(), i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
 
             if move_type == :death && accepted
                 # Verify no orphans
@@ -627,7 +624,7 @@ end
         # Run 100 moves
         for _ in 1:100
             i = rand(1:n)
-            update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            update_c_rjmcmc!(model, i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
         end
 
         # Final consistency check
@@ -675,7 +672,7 @@ end
         n_moves = 200
         for _ in 1:n_moves
             i = rand(1:n)
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, NoUpdate(), log_DDCRP)
 
             move_counts[move_type] += 1
             if accepted

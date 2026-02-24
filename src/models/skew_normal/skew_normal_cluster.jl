@@ -130,6 +130,67 @@ end
 
 cluster_param_dicts(state::SkewNormalClusterState) = (ξ = state.ξ_dict, ω = state.ω_dict, α = state.α_dict)
 
+# ── WeightedMean overrides for ω and α ───────────────────────────────────────
+# The generic WeightedMean uses ȳ_Si (observation mean) as the summary
+# statistic for every parameter, which is meaningless for ω (scale) and α
+# (shape) and can produce negative ω values (causing DomainError in log).
+#
+# ω override: work in variance (ω²) domain using the sample variance of S_i
+#   observations as the summary statistic. This keeps ω_aug always positive
+#   and checks for positivity of ω_depl before accepting.
+#
+# α override: use a weighted mean of the existing cluster α values, since
+#   there is no simple sufficient statistic for α from raw observations.
+
+function fixed_dim_param(::SkewNormalCluster, ::Val{:ω}, ::WeightedMean,
+                         S_i::Vector{Int}, table_depl::Vector{Int}, table_aug::Vector{Int},
+                         state::SkewNormalClusterState, data::ContinuousData,
+                         _priors::SkewNormalClusterPriors)
+    ω_depl  = state.ω_dict[table_depl]
+    ω_aug   = state.ω_dict[table_aug]
+    y_Si    = view(observations(data), S_i)
+    n_depl  = length(table_depl)
+    n_aug   = length(table_aug)
+    n_Si    = length(S_i)
+
+    # Population variance of S_i observations; 0 when n_Si == 1 (single point, no spread)
+    var_Si = n_Si > 1 ? var(y_Si; corrected=false) : 0.0
+
+    # Augmented cluster: variance-domain weighted mean (always ≥ 0)
+    ω_aug_sq_new = (n_aug * ω_aug^2 + n_Si * var_Si) / (n_aug + n_Si)
+    ω_aug_new    = sqrt(ω_aug_sq_new)
+
+    n_remaining = n_depl - n_Si
+    if n_remaining > 0
+        ω_depl_sq_new_num = n_depl * ω_depl^2 - n_Si * var_Si
+        if ω_depl_sq_new_num <= 0
+            return ω_depl, ω_aug_new, -Inf  # reject: depleted ω would be non-positive
+        end
+        ω_depl_new = sqrt(ω_depl_sq_new_num / n_remaining)
+    else
+        ω_depl_new = ω_depl  # cluster becomes empty; value unused
+    end
+
+    return ω_depl_new, ω_aug_new, 0.0
+end
+
+function fixed_dim_param(::SkewNormalCluster, ::Val{:α}, ::WeightedMean,
+                         S_i::Vector{Int}, table_depl::Vector{Int}, table_aug::Vector{Int},
+                         state::SkewNormalClusterState, _data::ContinuousData,
+                         _priors::SkewNormalClusterPriors)
+    α_depl  = state.α_dict[table_depl]
+    α_aug   = state.α_dict[table_aug]
+    n_aug   = length(table_aug)
+    n_Si    = length(S_i)
+
+    # Augmented cluster: weighted mean of existing α values (α is unconstrained)
+    α_aug_new  = (n_aug * α_aug + n_Si * α_depl) / (n_aug + n_Si)
+    # Depleted cluster: keep existing α (deconvolution of shape is ill-defined from raw obs)
+    α_depl_new = α_depl
+
+    return α_depl_new, α_aug_new, 0.0
+end
+
 # ============================================================================
 # Per-Parameter RJMCMC Interface (for use with MixedProposal)
 # ============================================================================
@@ -309,6 +370,74 @@ function birth_param_logpdf(::SkewNormalCluster, ::Val{:α}, prop::NormalMomentM
     data_Si = view(y, S_i)
     α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
     return logpdf(Normal(α_est, prop.σ[1]), α_val)
+end
+
+# --- LogNormalMomentMatch: ξ and α fall back to Normal proposals on original scale ---
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ξ}, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    σ_ξ = prop.σ[1]
+    Q = Normal(mean(view(y, S_i)), σ_ξ)
+    ξ_new = rand(Q)
+    return ξ_new, logpdf(Q, ξ_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ξ}, prop::LogNormalMomentMatch,
+                             ξ_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    σ_ξ = prop.σ[1]
+    return logpdf(Normal(mean(view(y, S_i)), σ_ξ), ξ_val)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:α}, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    σ_α = length(prop.σ) >= 3 ? prop.σ[3] : prop.σ[end]
+    Q = Normal(α_est, σ_α)
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:α}, prop::LogNormalMomentMatch,
+                             α_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    y = observations(data)
+    data_Si = view(y, S_i)
+    α_est = length(S_i) >= 3 ? alpha_from_skewness(estimate_skewness(collect(data_Si))) : 0.0
+    σ_α = length(prop.σ) >= 3 ? prop.σ[3] : prop.σ[end]
+    return logpdf(Normal(α_est, σ_α), α_val)
+end
+
+# --- InverseGammaMomentMatch: ξ and α fall back to prior ---
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:ξ}, ::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return sample_birth_param(SkewNormalCluster(), Val(:ξ), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:ξ}, ::InverseGammaMomentMatch,
+                             ξ_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return birth_param_logpdf(SkewNormalCluster(), Val(:ξ), PriorProposal(), ξ_val, S_i, state, data, priors)
+end
+
+function sample_birth_param(::SkewNormalCluster, ::Val{:α}, ::InverseGammaMomentMatch,
+                             S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return sample_birth_param(SkewNormalCluster(), Val(:α), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_param_logpdf(::SkewNormalCluster, ::Val{:α}, ::InverseGammaMomentMatch,
+                             α_val, S_i::Vector{Int}, state::SkewNormalClusterState,
+                             data::ContinuousData, priors::SkewNormalClusterPriors)
+    return birth_param_logpdf(SkewNormalCluster(), Val(:α), PriorProposal(), α_val, S_i, state, data, priors)
 end
 
 # --- PriorProposal ---

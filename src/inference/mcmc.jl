@@ -11,7 +11,7 @@ using Random, StatsBase
 # ============================================================================
 
 """
-    update_c!(model, state, data, priors, proposal, log_DDCRP, opts)
+    update_c!(model, state, data, priors, birth_proposal, fixed_dim_proposal, log_DDCRP, opts)
 
 Generic assignment update dispatcher. Uses Gibbs sampling when the model
 is marginalised or the proposal is conjugate; otherwise uses RJMCMC.
@@ -24,6 +24,7 @@ function update_c!(
     data::AbstractObservedData,
     priors::AbstractPriors,
     proposal::BirthProposal,
+    fixed_dim_proposal::FixedDimensionProposal,
     log_DDCRP::AbstractMatrix,
     opts::MCMCOptions
 )
@@ -39,7 +40,7 @@ function update_c!(
         if use_gibbs
             move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
         else
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP)
         end
         push!(diagnostics, (move_type, i, j_star, accepted))
     end
@@ -52,7 +53,7 @@ end
 # ============================================================================
 
 """
-    mcmc(model, data, ddcrp_params, priors, proposal; opts) -> MCMCSamples
+    mcmc(model, data, ddcrp_params, priors, proposal; fixed_dim_proposal, opts) -> MCMCSamples
 
 Main MCMC entry point. Dispatches based on model type.
 
@@ -64,6 +65,7 @@ Main MCMC entry point. Dispatches based on model type.
 - `proposal::BirthProposal`: Birth proposal for RJMCMC (or ConjugateProposal for Gibbs)
 
 # Keyword Arguments
+- `fixed_dim_proposal::FixedDimensionProposal`: Fixed-dimension proposal (default: `NoUpdate()`)
 - `opts::MCMCOptions`: MCMC configuration
 
 # Returns
@@ -76,6 +78,7 @@ function mcmc(
     ddcrp_params::DDCRPParams,
     priors::AbstractPriors,
     proposal::BirthProposal = PriorProposal();
+    fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
     opts::MCMCOptions = MCMCOptions()
 )
     # Validate data matches model requirements
@@ -119,7 +122,7 @@ function mcmc(
         update_params!(model, state, data, priors, tables, log_DDCRP, opts)
 
         # Update customer assignments (gibbs or rjmcmc based on model/proposal)
-        result = update_c!(model, state, data, priors, proposal, log_DDCRP, opts)
+        result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts)
 
         # Record diagnostics if returned
         if opts.track_diagnostics && !isnothing(diag) && !isnothing(result)
@@ -156,23 +159,32 @@ end
 """Convenience: CountData models (Poisson, NegBin) with separate y, D."""
 function mcmc(model::LikelihoodModel, y::AbstractVector, D::AbstractMatrix,
               ddcrp_params::DDCRPParams, priors::AbstractPriors,
-              proposal::BirthProposal = PriorProposal(); opts::MCMCOptions = MCMCOptions())
+              proposal::BirthProposal = PriorProposal();
+              fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
+              opts::MCMCOptions = MCMCOptions())
     data = CountData(y, D)
-    return mcmc(model, data, ddcrp_params, priors, proposal; opts=opts)
+    return mcmc(model, data, ddcrp_params, priors, proposal;
+                fixed_dim_proposal=fixed_dim_proposal, opts=opts)
 end
 
 """Convenience: CountDataWithTrials models (Binomial, PoissonPopulationRates) with separate y, N, D."""
 function mcmc(model::LikelihoodModel, y::AbstractVector, N::Union{Int, AbstractVector{Int}},
               D::AbstractMatrix, ddcrp_params::DDCRPParams, priors::AbstractPriors,
-              proposal::BirthProposal = PriorProposal(); opts::MCMCOptions = MCMCOptions())
+              proposal::BirthProposal = PriorProposal();
+              fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
+              opts::MCMCOptions = MCMCOptions())
     data = CountDataWithTrials(y, N, D)
-    return mcmc(model, data, ddcrp_params, priors, proposal; opts=opts)
+    return mcmc(model, data, ddcrp_params, priors, proposal;
+                fixed_dim_proposal=fixed_dim_proposal, opts=opts)
 end
 
 """Convenience: ContinuousData models (SkewNormal, Gamma, Weibull) with separate y, D."""
 function mcmc(model::Union{SkewNormalModel, GammaModel, WeibullModel}, y::AbstractVector{<:Real},
               D::AbstractMatrix, ddcrp_params::DDCRPParams, priors::AbstractPriors,
-              proposal::BirthProposal = PriorProposal(); opts::MCMCOptions = MCMCOptions())
+              proposal::BirthProposal = PriorProposal();
+              fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
+              opts::MCMCOptions = MCMCOptions())
     data = ContinuousData(y, D)
-    return mcmc(model, data, ddcrp_params, priors, proposal; opts=opts)
+    return mcmc(model, data, ddcrp_params, priors, proposal;
+                fixed_dim_proposal=fixed_dim_proposal, opts=opts)
 end

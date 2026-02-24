@@ -31,6 +31,9 @@ export PriorProposal, ConjugateProposal, MomentMatchedProposal
 export NormalMomentMatch, InverseGammaMomentMatch, LogNormalMomentMatch
 export FixedDistributionProposal, MixedProposal
 
+# Fixed-dimension proposals for RJMCMC
+export FixedDimensionProposal, NoUpdate, WeightedMean, Resample, MixedFixedDim
+
 # Negative Binomial model variants
 export NBGammaPoissonGlobalRMarg, NBGammaPoissonGlobalRMargState, NBGammaPoissonGlobalRMargPriors, NBGammaPoissonGlobalRMargSamples
 export NBGammaPoissonGlobalR, NBGammaPoissonGlobalRState, NBGammaPoissonGlobalRPriors, NBGammaPoissonGlobalRSamples

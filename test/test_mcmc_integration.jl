@@ -55,8 +55,7 @@
             n_samples = 500,
             verbose = false,
             infer_params = Dict(:λ => true, :r => true, :m => true, :c => true),
-            track_diagnostics = true,
-            fixed_dim_mode = :none
+            track_diagnostics = true
         )
 
         samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
@@ -100,8 +99,7 @@
             opts = MCMCOptions(
                 n_samples = 200,
                 verbose = false,
-                track_diagnostics = true,
-                fixed_dim_mode = :none
+                track_diagnostics = true
             )
 
             samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, prop; opts=opts)
@@ -128,8 +126,7 @@
         opts = MCMCOptions(
             n_samples = 300,
             verbose = false,
-            track_diagnostics = true,
-            fixed_dim_mode = :none
+            track_diagnostics = true
         )
 
         samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
@@ -191,8 +188,7 @@
         opts = MCMCOptions(
             n_samples = 300,
             verbose = false,
-            track_diagnostics = true,
-            fixed_dim_mode = :none
+            track_diagnostics = true
         )
 
         samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
@@ -298,8 +294,7 @@
             n_samples = 100,
             verbose = false,
             track_diagnostics = true,
-            track_pairwise = true,
-            fixed_dim_mode = :none
+            track_pairwise = true
         )
 
         samples, diag = mcmc(model, data.y, data.D, ddcrp_params, priors, PriorProposal(); opts=opts)
@@ -384,8 +379,7 @@
         opts = MCMCOptions(
             n_samples = 400,
             verbose = false,
-            track_diagnostics = true,
-            fixed_dim_mode = :none
+            track_diagnostics = true
         )
 
         cont_data = ContinuousData(data_sim.y, data_sim.D)
@@ -429,8 +423,7 @@
         opts = MCMCOptions(
             n_samples = 400,
             verbose = false,
-            track_diagnostics = true,
-            fixed_dim_mode = :none
+            track_diagnostics = true
         )
 
         cont_data = ContinuousData(data_sim.y, data_sim.D)

@@ -262,12 +262,11 @@
         @test opts.verbose == false
         @test opts.track_diagnostics == true
 
-        # Test with fixed_dim_mode
-        opts_fdm = MCMCOptions(fixed_dim_mode=:none)
-        @test opts_fdm.fixed_dim_mode == :none
-
-        opts_wm = MCMCOptions(fixed_dim_mode=:weighted_mean)
-        @test opts_wm.fixed_dim_mode == :weighted_mean
+        # Test FixedDimensionProposal types
+        @test NoUpdate() isa FixedDimensionProposal
+        @test WeightedMean() isa FixedDimensionProposal
+        @test Resample() isa FixedDimensionProposal
+        @test MixedFixedDim(ξ = WeightedMean(), ω = NoUpdate()) isa FixedDimensionProposal
 
         # Test infer_params dictionary
         opts_custom = MCMCOptions(infer_params=Dict(:λ => true, :r => false, :c => true))
@@ -416,14 +415,12 @@
             verbose=true,
             infer_params=Dict(:λ => true, :r => true, :m => false, :c => true),
             prop_sds=Dict(:λ => 0.1, :r => 0.05, :m => 0.2),
-            fixed_dim_mode=:resample_posterior,
             track_diagnostics=true,
             track_pairwise=true
         )
 
         @test opts.n_samples == 5000
         @test opts.verbose == true
-        @test opts.fixed_dim_mode == :resample_posterior
         @test opts.track_diagnostics == true
         @test opts.track_pairwise == true
 
@@ -442,11 +439,12 @@
         opts_default = MCMCOptions()
         @test get_prop_sd(opts_default, :λ) > 0  # Should have some default
 
-        # Test all fixed_dim_mode options
-        for mode in [:none, :weighted_mean, :resample_posterior]
-            opts_mode = MCMCOptions(fixed_dim_mode=mode)
-            @test opts_mode.fixed_dim_mode == mode
-        end
+        # Test FixedDimensionProposal constructors
+        @test Resample(PriorProposal()) isa Resample{PriorProposal}
+        @test Resample(NormalMomentMatch(0.5)) isa Resample{NormalMomentMatch}
+        fdim = MixedFixedDim(ξ = WeightedMean(), ω = NoUpdate(), α = NoUpdate())
+        @test fdim.proposals.ξ isa WeightedMean
+        @test fdim.proposals.ω isa NoUpdate
     end
 
     @testset "Cluster Label Conversion - Edge Cases" begin

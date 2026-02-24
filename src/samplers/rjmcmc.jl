@@ -67,108 +67,6 @@ function find_table_for_customer(j, param_dict)
 end
 
 # ============================================================================
-# Fixed-Dimension Mean Update Functions
-# ============================================================================
-
-"""
-    compute_fixed_dim_means(mode, S_i, λ, table_A, m_A, table_B, m_B, priors)
-
-Compute updated means when S_i moves from cluster A to cluster B.
-Returns (m_A_new, m_B_new, log_proposal_ratio).
-"""
-function compute_fixed_dim_means(mode::Symbol, S_i, λ, table_A, m_A, table_B, m_B, priors)
-    if mode == :weighted_mean
-        return compute_weighted_means(S_i, λ, table_A, m_A, table_B, m_B)
-    elseif mode == :resample_posterior
-        return resample_posterior_means(S_i, λ, table_A, m_A, table_B, m_B, priors)
-    else
-        # :none - No update, maintain existing means
-        return m_A, m_B, 0.0
-    end
-end
-
-"""
-    compute_weighted_means(S_i, λ, table_A, m_A, table_B, m_B)
-
-Weighted mean update: new means are weighted averages.
-"""
-function compute_weighted_means(S_i, λ, table_A, m_A, table_B, m_B)
-    n_A = length(table_A)
-    n_B = length(table_B)
-    n_Si = length(S_i)
-    λ_bar_Si = mean(view(λ, S_i))
-
-    # New mean for augmented cluster B
-    m_B_new = (n_B * m_B + n_Si * λ_bar_Si) / (n_B + n_Si)
-
-    # New mean for depleted cluster A
-    remaining_A = setdiff(table_A, S_i)
-    if isempty(remaining_A)
-        m_A_new = m_A
-        log_jacobian = 0.0
-    else
-        n_remaining = length(remaining_A)
-        m_A_new = (n_A * m_A - n_Si * λ_bar_Si) / n_remaining
-
-        if m_A_new <= 0
-            m_A_new = m_A
-            log_jacobian = -Inf
-        else
-            log_jacobian = 0.0
-        end
-    end
-
-    return m_A_new, m_B_new, log_jacobian
-end
-
-"""
-    resample_posterior_means(S_i, λ, table_A, m_A, table_B, m_B, priors)
-
-Resample means from approximate conditional posteriors.
-"""
-function resample_posterior_means(S_i, λ, table_A, m_A, table_B, m_B, priors)
-    remaining_A = setdiff(table_A, S_i)
-    augmented_B = vcat(table_B, S_i)
-
-    # Sample new m_A from approximate posterior
-    if isempty(remaining_A)
-        m_A_new = m_A
-        log_q_A_forward = 0.0
-        log_q_A_reverse = 0.0
-    else
-        n_A_new = length(remaining_A)
-        sum_λ_A = sum(view(λ, remaining_A))
-        α_A = n_A_new + priors.m_a
-        β_A = sum_λ_A + priors.m_b
-        Q_A = InverseGamma(α_A, β_A)
-        m_A_new = rand(Q_A)
-        log_q_A_forward = logpdf(Q_A, m_A_new)
-
-        α_A_rev = length(table_A) + priors.m_a
-        β_A_rev = sum(view(λ, table_A)) + priors.m_b
-        log_q_A_reverse = logpdf(InverseGamma(α_A_rev, β_A_rev), m_A)
-    end
-
-    # Sample new m_B from approximate posterior
-    n_B_new = length(augmented_B)
-    sum_λ_B = sum(view(λ, augmented_B))
-    α_B = n_B_new + priors.m_a
-    β_B = sum_λ_B + priors.m_b
-    Q_B = InverseGamma(α_B, β_B)
-    m_B_new = rand(Q_B)
-    log_q_B_forward = logpdf(Q_B, m_B_new)
-
-    α_B_rev = length(table_B) + priors.m_a
-    β_B_rev = sum(view(λ, table_B)) + priors.m_b
-    log_q_B_reverse = logpdf(InverseGamma(α_B_rev, β_B_rev), m_B)
-
-    # Log proposal ratio: log q(reverse) - log q(forward)
-    lpr = (log_q_A_reverse + log_q_B_reverse) - (log_q_A_forward + log_q_B_forward)
-
-    return m_A_new, m_B_new, lpr
-end
-
-# ============================================================================
 # Generic RJMCMC for Customer Assignments
 # Uses the interface methods from rjmcmc_interface.jl:
 #   cluster_param_dicts, sample_birth_params, birth_params_logpdf, fixed_dim_params
@@ -176,7 +74,7 @@ end
 # ============================================================================
 
 """
-    update_c_rjmcmc!(model, i, state, data, priors, proposal, log_DDCRP, opts)
+    update_c_rjmcmc!(model, i, state, data, priors, birth_proposal, fixed_dim_proposal, log_DDCRP)
 
 Generic RJMCMC update for customer i's assignment.
 Dispatches on interface methods to handle any number of cluster parameter dicts.
@@ -192,8 +90,8 @@ function update_c_rjmcmc!(
     data::AbstractObservedData,
     priors::AbstractPriors,
     proposal::BirthProposal,
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
+    fixed_dim_proposal::FixedDimensionProposal,
+    log_DDCRP::AbstractMatrix
 )
     n = length(state.c)
     j_old = state.c[i]
@@ -318,7 +216,7 @@ function update_c_rjmcmc!(
 
         # Compute fixed-dim params before modification
         params_depl, params_aug, lpr = fixed_dim_params(
-            model, S_i, table_old_target, table_new_target, state, data, priors, opts)
+            model, fixed_dim_proposal, S_i, table_old_target, table_new_target, state, data, priors)
 
         # Compute old contributions before modification
         old_contrib = table_contribution(model, table_old_target, state, data, priors) +
