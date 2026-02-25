@@ -70,7 +70,9 @@ struct DDCRPParams{T<:Real}
     decay_fn::Function
 end
 
+exp_decay(d; scale) = exp(-d * scale)
+
 # Default constructor with exponential decay
 function DDCRPParams(α::T, scale::T) where {T<:Real}
-    DDCRPParams(α, scale, (d; scale=scale) -> exp(-d * scale))
+    DDCRPParams(α, scale, exp_decay)
 end
