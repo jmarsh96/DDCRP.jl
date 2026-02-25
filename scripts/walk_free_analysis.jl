@@ -12,12 +12,14 @@
 # K distributions and pairwise co-clustering matrices.
 # ============================================================================
 
+using Distributed
 using DDCRP
 using CSV, DataFrames, Distances
 using Statistics, StatsBase, LinearAlgebra
 using Plots, StatsPlots
 using Random
 using Printf
+using XLSX
 
 Random.seed!(2025)
 
@@ -33,18 +35,30 @@ mkpath("results/walkfree/figures")
 # ============================================================================
 
 println("Loading GSI data...")
-df = CSV.read("GSI_cleaned.csv", DataFrame)
-filter!(row -> row.sampled, df)
+data_path = joinpath("data", "2023-Global-Slavery-Index-Data.xlsx")
+df = DataFrame(XLSX.readtable(data_path, "GSI 2023 summary data"; first_row = 3))
+rename!(df, Dict(
+    "Estimated number of people in modern slavery" => :est_num_ms,
+    "Population" => :pop,
+    "Governance issues" => :governance_issues,
+    "Lack of basic needs" => :lack_basic_needs,
+    "Inequality" => :inequality,
+    "Disenfranchised groups" => :disenfranchised_groups,
+    "Effects of conflict" => :effects_of_conflict
+))
+
+# also remove any zero pops
+filter!(x -> x.pop > 0, df)
 
 # Drop rows with missing values in the required columns
 covariate_cols = [:governance_issues, :lack_basic_needs, :inequality,
                   :disenfranchised_groups, :effects_of_conflict]
-required_cols  = [:num_people_ms_esti, :pop, covariate_cols...]
+required_cols  = [:est_num_ms, :pop, covariate_cols...]
 
 df_clean = dropmissing(df, required_cols)
 println("  Countries after dropping missing: $(nrow(df_clean)) / $(nrow(df))")
 
-y = Int.(df_clean.num_people_ms_esti)   # count of people in modern slavery
+y = Int.(df_clean.est_num_ms)   # count of people in modern slavery
 P = Int.(df_clean.pop)                  # population exposure
 
 # Standardise covariates to zero-mean, unit-variance before computing distances
@@ -86,23 +100,39 @@ cv_opts = MCMCOptions(
 waic_grid = fill(Inf, length(α_grid), length(scale_grid))
 lpml_grid = fill(-Inf, length(α_grid), length(scale_grid))
 
-println("\nRunning DDCRP parameter cross-validation ($(length(α_grid)*length(scale_grid)) fits)...")
-for (ia, α) in enumerate(α_grid)
-    for (is, sc) in enumerate(scale_grid)
-        cv_params  = DDCRPParams(α, sc)
-        cv_samples = mcmc(
-            NBPopulationRatesMarg(),
-            y, P, D,
-            cv_params,
-            priors_marg,
-            ConjugateProposal();
-            opts = cv_opts
-        )
-        res = compute_waic(y, cv_samples.λ; burnin=cv_burnin)
-        waic_grid[ia, is] = res.waic
-        lpml_grid[ia, is] = compute_lpml(y, cv_samples.λ; burnin=cv_burnin)
-        @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f\n" α sc res.waic lpml_grid[ia, is]
-    end
+# Launch distributed workers for parallel CV
+if nprocs() == 1
+    n_workers = 6
+    addprocs(n_workers; exeflags = ["--project=$(Base.active_project())"])
+    @everywhere using DDCRP
+end
+
+n_fits = length(α_grid) * length(scale_grid)
+println("\nRunning DDCRP parameter cross-validation ($n_fits fits on $(nworkers()) workers)...")
+
+param_grid = [
+    (ia, is, α, sc) for (ia, α) in enumerate(α_grid) for (is, sc) in enumerate(scale_grid)
+]
+
+cv_results = pmap(param_grid) do (ia, is, α, sc)
+    cv_params  = DDCRPParams(α, sc)
+    cv_samples = mcmc(
+        NBPopulationRatesMarg(),
+        y, P, D,
+        cv_params,
+        priors_marg,
+        ConjugateProposal();
+        opts = cv_opts
+    )
+    res  = compute_waic(y, cv_samples.λ; burnin=cv_burnin)
+    lpml = compute_lpml(y, cv_samples.λ; burnin=cv_burnin)
+    (ia=ia, is=is, α=α, scale=sc, waic=res.waic, lpml=lpml)
+end
+
+for r in cv_results
+    waic_grid[r.ia, r.is] = r.waic
+    lpml_grid[r.ia, r.is] = r.lpml
+    @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f\n" r.α r.scale r.waic r.lpml
 end
 
 best_idx  = argmin(waic_grid)
