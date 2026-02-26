@@ -245,6 +245,116 @@ function update_r!(
 end
 
 """
+    log_target_grad_φ(model, φ, data, state, priors, tables)
+
+Compute the gradient of the log-posterior w.r.t. φ = log(λ) (the unconstrained
+log-space representation of the latent rates).
+
+The log-target in φ-space is:
+
+    log p(φ) = likelihood_contribution(y, exp.(φ))   [Σ yᵢφᵢ − exp(φᵢ)]
+             + Σₖ table_contribution(k)               [marginalised γ_k terms]
+             + Σᵢ φᵢ                                  [Jacobian of log-transform]
+
+Gradient for observation i in cluster k:
+
+    ∂log p/∂φᵢ = yᵢ − λᵢ + r − (nₖ·r + γ_a) · λᵢ / (Pᵢ · denomₖ)
+
+where denomₖ = γ_b + Σⱼ∈ₖ λⱼ/Pⱼ.
+"""
+function log_target_grad_φ(
+    ::NBPopulationRatesMarg,
+    φ::Vector{Float64},
+    data::CountDataWithTrials,
+    state::NBPopulationRatesMargState,
+    priors::NBPopulationRatesMargPriors,
+    tables::Vector{Vector{Int}}
+)
+    λ = exp.(φ)
+    y = observations(data)
+    P = trials(data)
+    r = state.r
+    n = length(φ)
+    grad = Vector{Float64}(undef, n)
+
+    for table in tables
+        n_k = length(table)
+        P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
+        λ_k = view(λ, table)
+        sum_λ_over_P = sum(λ_k[j] / P_k[j] for j in 1:n_k)
+        denom = priors.γ_b + sum_λ_over_P
+        integral_shape = n_k * r + priors.γ_a
+
+        for (j, i) in enumerate(table)
+            grad[i] = Float64(y[i]) - λ[i] + r - integral_shape * λ[i] / (P_k[j] * denom)
+        end
+    end
+
+    return grad
+end
+
+"""
+    update_λ_hmc!(model, state, data, priors, tables; ε, L)
+
+Update all latent rates λ jointly using Hamiltonian Monte Carlo (HMC).
+
+Works in log-space φ = log(λ) to handle the positivity constraint. Uses the
+analytical gradient of the log-posterior (see `log_target_grad_φ`) and a
+standard leapfrog integrator with a Metropolis correction.
+
+- `ε`: leapfrog step size (passed via `opts.prop_sds[:λ]`)
+- `L`: number of leapfrog steps (passed via `opts.hmc_steps`)
+"""
+function update_λ_hmc!(
+    model::NBPopulationRatesMarg,
+    state::NBPopulationRatesMargState,
+    data::CountDataWithTrials,
+    priors::NBPopulationRatesMargPriors,
+    tables::Vector{Vector{Int}};
+    ε::Float64 = 0.1,
+    L::Int = 10
+)
+    y = observations(data)
+    φ = log.(state.λ)
+    p = randn(length(φ))
+
+    # Helper: log-target in φ-space
+    function log_target_φ(φ_)
+        λ_ = exp.(φ_)
+        state_ = NBPopulationRatesMargState(state.c, λ_, state.r)
+        return likelihood_contribution(y, λ_) +
+               sum(table_contribution(model, t, state_, data, priors) for t in tables) +
+               sum(φ_)
+    end
+
+    # Helper: gradient of log-target in φ-space
+    grad_fn = φ_ -> log_target_grad_φ(model, φ_, data, state, priors, tables)
+
+    # Current Hamiltonian
+    H_current = -log_target_φ(φ) + 0.5 * sum(abs2, p)
+
+    # Leapfrog integration
+    φ_prop = copy(φ)
+    p_prop = copy(p)
+    p_prop .+= (ε / 2) .* grad_fn(φ_prop)
+    for l in 1:L
+        φ_prop .+= ε .* p_prop
+        if l < L
+            p_prop .+= ε .* grad_fn(φ_prop)
+        end
+    end
+    p_prop .+= (ε / 2) .* grad_fn(φ_prop)
+
+    # Proposed Hamiltonian
+    H_prop = -log_target_φ(φ_prop) + 0.5 * sum(abs2, p_prop)
+
+    # Metropolis accept/reject
+    if log(rand()) < H_current - H_prop
+        state.λ = exp.(φ_prop)
+    end
+end
+
+"""
     update_params!(model::NBPopulationRatesMarg, state, data, priors, tables, log_DDCRP, opts)
 
 Update all model parameters (λ, r). Assignment updates are handled by update_c!.
@@ -259,9 +369,8 @@ function update_params!(
     opts::MCMCOptions
 )
     if should_infer(opts, :λ)
-        for i in 1:nobs(data)
-            update_λ!(model, i, data, state, priors, tables; prop_sd=get_prop_sd(opts, :λ))
-        end
+        update_λ_hmc!(model, state, data, priors, tables;
+                      ε=get_prop_sd(opts, :λ), L=opts.hmc_steps)
     end
 
     if should_infer(opts, :r)
