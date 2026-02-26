@@ -102,9 +102,10 @@ lpml_grid = fill(-Inf, length(α_grid), length(scale_grid))
 
 # Launch distributed workers for parallel CV
 if nprocs() == 1
-    n_workers = 6
+    n_workers = 2
     addprocs(n_workers; exeflags = ["--project=$(Base.active_project())"])
     @everywhere using DDCRP
+    @everywhere using Statistics
 end
 
 n_fits = length(α_grid) * length(scale_grid)
@@ -126,13 +127,14 @@ cv_results = pmap(param_grid) do (ia, is, α, sc)
     )
     res  = compute_waic(y, cv_samples.λ; burnin=cv_burnin)
     lpml = compute_lpml(y, cv_samples.λ; burnin=cv_burnin)
-    (ia=ia, is=is, α=α, scale=sc, waic=res.waic, lpml=lpml)
+    mean_k = mean(calculate_n_clusters(cv_samples.c[cv_burnin+1:end, :]))
+    (ia=ia, is=is, α=α, scale=sc, waic=res.waic, lpml=lpml, mean_k=mean_k)
 end
 
 for r in cv_results
     waic_grid[r.ia, r.is] = r.waic
     lpml_grid[r.ia, r.is] = r.lpml
-    @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f\n" r.α r.scale r.waic r.lpml
+    @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f  mean_k=%6.2f\n" r.α r.scale r.waic r.lpml r.mean_k
 end
 
 best_idx  = argmin(waic_grid)
@@ -145,14 +147,15 @@ cv_df = DataFrame(
     α     = repeat(α_grid, inner=length(scale_grid)),
     scale = repeat(scale_grid, outer=length(α_grid)),
     waic  = vec(waic_grid),
-    lpml  = vec(lpml_grid)
+    lpml  = vec(lpml_grid),
+    mean_k = vec(mean_k_grid)
 )
 CSV.write("results/walkfree/cv_grid.csv", cv_df)
 
 # CV heatmap plots
 p_cv_waic = heatmap(scale_grid, α_grid, waic_grid,
     xlabel="scale", ylabel="α", title="WAIC surface (lower = better)",
-    color=:viridis_r, colorbar_title="WAIC")
+    color=cgrad(:viridis, rev=true), colorbar_title="WAIC")
 savefig(p_cv_waic, "results/walkfree/figures/cv_waic_surface.png")
 
 p_cv_lpml = heatmap(scale_grid, α_grid, lpml_grid,
@@ -161,6 +164,7 @@ p_cv_lpml = heatmap(scale_grid, α_grid, lpml_grid,
 savefig(p_cv_lpml, "results/walkfree/figures/cv_lpml_surface.png")
 
 ddcrp_params = DDCRPParams(α_opt, scale_opt)
+ddcrp_params = DDCRPParams(0.1, scale_opt) # testing
 
 n_samples  = 20_000
 n_burnin   = 5_000
@@ -188,12 +192,16 @@ samples_marg, diag_marg = mcmc(
 
 println("  Total time: $(round(diag_marg.total_time, digits=1)) s")
 
+plot(samples_marg.logpost)
+plot(calculate_n_clusters(samples_marg.c))
+
+
 # ============================================================================
 # 4. Run 2 – Non-marginalised RJMCMC, PriorProposal + NoUpdate
 # ============================================================================
 
 println("\n[Run 2] NBPopulationRates – RJMCMC + PriorProposal + NoUpdate")
-samples_rj1, diag_rj1 = mcmc(
+samples_rj, diag_rj = mcmc(
     NBPopulationRates(),
     y, P, D,
     ddcrp_params,
@@ -203,28 +211,13 @@ samples_rj1, diag_rj1 = mcmc(
     opts = base_opts
 )
 
-ar_rj1 = acceptance_rates(diag_rj1)
-println("  Acceptance rates — birth: $(round(ar_rj1.birth, digits=3)),  death: $(round(ar_rj1.death, digits=3)),  fixed: $(round(ar_rj1.fixed, digits=3))")
-println("  Total time: $(round(diag_rj1.total_time, digits=1)) s")
+ar_rj = acceptance_rates(diag_rj)
+println("  Acceptance rates — birth: $(round(ar_rj.birth, digits=3)),  death: $(round(ar_rj.death, digits=3)),  fixed: $(round(ar_rj.fixed, digits=3))")
+println("  Total time: $(round(diag_rj.total_time, digits=1)) s")
 
-# ============================================================================
-# 5. Run 3 – Non-marginalised RJMCMC, PriorProposal + WeightedMean
-# ============================================================================
+plot(samples_rj.logpost[200:end])
+plot(calculate_n_clusters(samples_rj.c))
 
-println("\n[Run 3] NBPopulationRates – RJMCMC + PriorProposal + WeightedMean")
-samples_rj2, diag_rj2 = mcmc(
-    NBPopulationRates(),
-    y, P, D,
-    ddcrp_params,
-    priors_unmarg,
-    PriorProposal();
-    fixed_dim_proposal = WeightedMean(),
-    opts = base_opts
-)
-
-ar_rj2 = acceptance_rates(diag_rj2)
-println("  Acceptance rates — birth: $(round(ar_rj2.birth, digits=3)),  death: $(round(ar_rj2.death, digits=3)),  fixed: $(round(ar_rj2.fixed, digits=3))")
-println("  Total time: $(round(diag_rj2.total_time, digits=1)) s")
 
 # ============================================================================
 # 6. Post-processing helpers
@@ -252,24 +245,22 @@ function postprocess(samples, label, n_burnin)
 end
 
 res_marg = postprocess(samples_marg, "Marg-Gibbs",    n_burnin)
-res_rj1  = postprocess(samples_rj1,  "RJMCMC-NoUpd",  n_burnin)
-res_rj2  = postprocess(samples_rj2,  "RJMCMC-WtMean", n_burnin)
+res_rj  = postprocess(samples_rj,  "RJMCMC-NoUpd",  n_burnin)
 
-results = [res_marg, res_rj1, res_rj2]
+results = [res_marg, res_rj]
 
 # ============================================================================
 # 7. K distribution comparison
 # ============================================================================
 
-all_k = sort(unique(vcat(res_marg.k, res_rj1.k, res_rj2.k)))
+all_k = sort(unique(vcat(res_marg.k, res_rj.k)))
 println("\n=== K distribution comparison ===")
-@printf "%-5s  %-14s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC-NoUpd" "RJMCMC-WtMean"
+@printf "%-5s  %-14s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC-NoUpd"
 println("-" * 55)
 for k in all_k
     p1 = round(mean(res_marg.k .== k), digits=4)
-    p2 = round(mean(res_rj1.k  .== k), digits=4)
-    p3 = round(mean(res_rj2.k  .== k), digits=4)
-    @printf "%-5d  %-14.4f  %-14.4f  %-14.4f\n" k p1 p2 p3
+    p2 = round(mean(res_rj.k  .== k), digits=4)
+    @printf "%-5d  %-14.4f  %-14.4f  %-14.4f\n" k p1 p2
 end
 
 # ============================================================================

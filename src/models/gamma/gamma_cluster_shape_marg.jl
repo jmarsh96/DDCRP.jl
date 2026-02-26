@@ -210,6 +210,116 @@ function birth_params_logpdf(::GammaClusterShapeMarg, prop::FixedDistributionPro
 end
 
 # ============================================================================
+# Per-parameter dispatch — required by Resample fixed-dim proposal
+# ============================================================================
+# Resample calls sample_birth_param(model, Val{:α}, inner_proposal, ...)
+# rather than sample_birth_params(...) -> NamedTuple.
+
+# --- PriorProposal ---
+function sample_birth_param(::GammaClusterShapeMarg, ::Val{:α}, ::PriorProposal,
+                            S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    Q = Gamma(priors.α_a, 1/priors.α_b)
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::GammaClusterShapeMarg, ::Val{:α}, ::PriorProposal,
+                            α_val, S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    return logpdf(Gamma(priors.α_a, 1/priors.α_b), α_val)
+end
+
+# --- NormalMomentMatch ---
+function sample_birth_param(::GammaClusterShapeMarg, ::Val{:α}, prop::NormalMomentMatch,
+                            S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = fit_gamma_shape_moments(view(y, S_i))
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    Q = truncated(Normal(α_est, prop.σ[1]), 0.0, Inf)
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::GammaClusterShapeMarg, ::Val{:α}, prop::NormalMomentMatch,
+                            α_val, S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = fit_gamma_shape_moments(view(y, S_i))
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    Q = truncated(Normal(α_est, prop.σ[1]), 0.0, Inf)
+    return logpdf(Q, α_val)
+end
+
+# --- InverseGammaMomentMatch (falls back to prior for the shape parameter) ---
+function sample_birth_param(model::GammaClusterShapeMarg, ::Val{:α}, ::InverseGammaMomentMatch,
+                            S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    return sample_birth_param(model, Val(:α), PriorProposal(), S_i, state, data, priors)
+end
+
+function birth_param_logpdf(model::GammaClusterShapeMarg, ::Val{:α}, ::InverseGammaMomentMatch,
+                            α_val, S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    return birth_param_logpdf(model, Val(:α), PriorProposal(), α_val, S_i, state, data, priors)
+end
+
+# --- LogNormalMomentMatch ---
+function sample_birth_param(::GammaClusterShapeMarg, ::Val{:α}, prop::LogNormalMomentMatch,
+                            S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    y = observations(data)
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(view(y, S_i))
+    end
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    α_est = max(α_est, 0.01)
+    log_α_new = rand(Normal(log(α_est), prop.σ[1]))
+    α_new = exp(log_α_new)
+    log_q = logpdf(Normal(log(α_est), prop.σ[1]), log_α_new) - log_α_new
+    return α_new, log_q
+end
+
+function birth_param_logpdf(::GammaClusterShapeMarg, ::Val{:α}, prop::LogNormalMomentMatch,
+                            α_val, S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    α_val <= 0 && return -Inf
+    y = observations(data)
+    α_est = nothing
+    if length(S_i) >= prop.min_size
+        α_est = fit_gamma_shape_moments(view(y, S_i))
+    end
+    if isnothing(α_est)
+        α_est = priors.α_a / priors.α_b
+    end
+    α_est = max(α_est, 0.01)
+    return logpdf(Normal(log(α_est), prop.σ[1]), log(α_val)) - log(α_val)
+end
+
+# --- FixedDistributionProposal ---
+function sample_birth_param(::GammaClusterShapeMarg, ::Val{:α}, prop::FixedDistributionProposal,
+                            S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    Q = prop.dists[1]
+    α_new = rand(Q)
+    return α_new, logpdf(Q, α_new)
+end
+
+function birth_param_logpdf(::GammaClusterShapeMarg, ::Val{:α}, prop::FixedDistributionProposal,
+                            α_val, S_i::Vector{Int}, state::GammaClusterShapeMargState,
+                            data::ContinuousData, priors::GammaClusterShapeMargPriors)
+    return logpdf(prop.dists[1], α_val)
+end
+
+# ============================================================================
 # Table Contribution (Marginal Likelihood)
 # ============================================================================
 
