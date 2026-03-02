@@ -20,6 +20,7 @@ using Plots, StatsPlots
 using Random
 using Printf
 using XLSX
+using JLD2
 
 Random.seed!(2025)
 
@@ -29,6 +30,7 @@ Random.seed!(2025)
 
 mkpath("results/walkfree")
 mkpath("results/walkfree/figures")
+mkpath("results/walkfree/chains")
 
 # ============================================================================
 # 1. Load and preprocess data
@@ -85,14 +87,10 @@ priors_unmarg = NBPopulationRatesPriors(2.0, 0.1, 1.0, 0.1)
 # 2b. Cross-validation for optimal DDCRP hyperparameters (α, scale)
 # ============================================================================
 
-α_grid     = [0.1, 0.5, 1.0, 2.0, 5.0]
-scale_grid = [0.5, 1.0, 2.0, 5.0, 10.0]
-n_cv       = 4_000
-cv_burnin  = 1_000
-
-# test 
-n_cv = 400
-cv_burnin = 100
+α_grid = 0.1:0.5:5.0
+scale_grid = 0.5:0.5:10.0
+n_cv       = 10_000
+cv_burnin  = 2_000
 
 cv_opts = MCMCOptions(
     n_samples         = n_cv,
@@ -105,12 +103,24 @@ waic_grid = fill(Inf, length(α_grid), length(scale_grid))
 lpml_grid = fill(-Inf, length(α_grid), length(scale_grid))
 meank_grid = fill(-Inf, length(α_grid), length(scale_grid))
 
-# Launch distributed workers for parallel CV
+# Launch distributed workers for parallel CV.
+# Auto-detects SLURM: if SLURM_JOB_ID is set, uses SlurmClusterManager to
+# launch workers across the allocated nodes; otherwise falls back to local addprocs.
 if nprocs() == 1
-    n_workers = 8
-    addprocs(n_workers; exeflags = ["--project=$(Base.active_project())"])
+    exeflags = ["--project=$(Base.active_project())"]
+    if haskey(ENV, "SLURM_JOB_ID")
+        using SlurmClusterManager
+        n_slurm_tasks = parse(Int, get(ENV, "SLURM_NTASKS", "1"))
+        println("SLURM detected: SLURM_NTASKS=$n_slurm_tasks — launching $(n_slurm_tasks - 1) workers via SlurmManager")
+        addprocs(SlurmManager(); exeflags=exeflags)
+    else
+        n_workers = 8
+        println("No SLURM detected: adding $n_workers local workers")
+        addprocs(n_workers; exeflags=exeflags)
+    end
     @everywhere using DDCRP
     @everywhere using Statistics
+    @everywhere using JLD2
 end
 
 n_fits = length(α_grid) * length(scale_grid)
@@ -130,6 +140,8 @@ cv_results = pmap(param_grid) do (ia, is, α, sc)
         ConjugateProposal();
         opts = cv_opts
     )
+    chain_path = @sprintf "results/walkfree/chains/cv_a%.1f_s%.1f.jld2" α sc
+    @save chain_path cv_samples α sc
     res  = compute_waic(y, cv_samples.λ; burnin=cv_burnin)
     lpml = compute_lpml(y, cv_samples.λ; burnin=cv_burnin)
     mean_k = mean(calculate_n_clusters(cv_samples.c[cv_burnin+1:end, :]))
@@ -171,12 +183,8 @@ savefig(p_cv_lpml, "results/walkfree/figures/cv_lpml_surface.png")
 
 ddcrp_params = DDCRPParams(α_opt, scale_opt)
 
-n_samples  = 20_000
-n_burnin   = 5_000
-
-# testing
-n_samples = 5_000
-n_burnin = 1_000
+n_samples  = 160_000
+n_burnin   = 10_000
 
 base_opts = MCMCOptions(
     n_samples         = n_samples,
@@ -200,6 +208,8 @@ samples_marg, diag_marg = mcmc(
 )
 
 println("  Total time: $(round(diag_marg.total_time, digits=1)) s")
+@save "results/walkfree/chains/samples_marg.jld2" samples_marg diag_marg ddcrp_params priors_marg
+println("  Chain saved to results/walkfree/chains/samples_marg.jld2")
 
 plot(samples_marg.logpost)
 plot(calculate_n_clusters(samples_marg.c))
@@ -223,6 +233,8 @@ samples_rj, diag_rj = mcmc(
 ar_rj = acceptance_rates(diag_rj)
 println("  Acceptance rates — birth: $(round(ar_rj.birth, digits=3)),  death: $(round(ar_rj.death, digits=3)),  fixed: $(round(ar_rj.fixed, digits=3))")
 println("  Total time: $(round(diag_rj.total_time, digits=1)) s")
+@save "results/walkfree/chains/samples_rj.jld2" samples_rj diag_rj ddcrp_params priors_unmarg
+println("  Chain saved to results/walkfree/chains/samples_rj.jld2")
 
 plot(samples_rj.logpost[200:end])
 plot(calculate_n_clusters(samples_rj.c))
@@ -254,7 +266,7 @@ function postprocess(samples, label, n_burnin)
 end
 
 res_marg = postprocess(samples_marg, "Marg-Gibbs",    n_burnin)
-res_rj  = postprocess(samples_rj,  "RJMCMC-NoUpd",  n_burnin)
+res_rj  = postprocess(samples_rj,  "RJMCMC",  n_burnin)
 
 results = [res_marg, res_rj]
 
@@ -264,7 +276,7 @@ results = [res_marg, res_rj]
 
 all_k = sort(unique(vcat(res_marg.k, res_rj.k)))
 println("\n=== K distribution comparison ===")
-@printf "%-5s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC-NoUpd"
+@printf "%-5s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC"
 println("-" ^ 55)
 for k in all_k
     p1 = round(mean(res_marg.k .== k), digits=4)
@@ -277,7 +289,7 @@ end
 # ============================================================================
 
 colors = [:steelblue, :darkorange, :forestgreen]
-labels = ["Marg-Gibbs", "RJMCMC-NoUpd", "RJMCMC-WtMean"]
+labels = ["Marg-Gibbs", "RJMCMC", "RJMCMC-WtMean"]
 
 # 8a. K distribution bar chart (overlay)
 p_k = plot(title="Posterior K distribution (Walk Free)", xlabel="K", ylabel="Probability")
@@ -318,7 +330,7 @@ end
 
 # 8e. Logpost traces
 p_lp = plot(title="Log-posterior traces", xlabel="Iteration", ylabel="Log-posterior")
-post_samples = [samples_marg, samples_rj1, samples_rj2]
+post_samples = [samples_marg, samples_rj]
 for (s, col, lbl) in zip(post_samples, colors, labels)
     plot!(p_lp, s.logpost[(n_burnin+1):end], label=lbl, color=col, alpha=0.7, linewidth=0.8)
 end
@@ -330,9 +342,9 @@ println("\nAll figures saved to results/walkfree/figures/")
 # 9. Summary metrics CSV
 # ============================================================================
 
-ar_names  = ["marg_gibbs", "rjmcmc_no_update", "rjmcmc_weighted_mean"]
-ar_list   = [nothing, ar_rj1, ar_rj2]
-time_list = [diag_marg.total_time, diag_rj1.total_time, diag_rj2.total_time]
+ar_names  = ["marg_gibbs", "rjmcmc_no_update"]
+ar_list   = [nothing, ar_rj]
+time_list = [diag_marg.total_time, diag_rj.total_time]
 
 rows = DataFrame(
     run            = ar_names,
@@ -354,4 +366,116 @@ CSV.write("results/walkfree/summary_metrics.csv", rows)
 println("Summary metrics saved to results/walkfree/summary_metrics.csv")
 println("CV grid saved to results/walkfree/cv_grid.csv")
 println("All figures in results/walkfree/figures/")
+
+# ============================================================================
+# 10. Cluster visualisation (PCA-based, singletons removed)
+# ============================================================================
+
+# -- PCA via SVD (LinearAlgebra already loaded; X_std is n × p, zero-mean) --
+F_svd    = svd(X_std)
+pc1      = F_svd.U[:, 1] .* F_svd.S[1]
+pc2      = F_svd.U[:, 2] .* F_svd.S[2]
+var_expl = 100 .* F_svd.S .^ 2 ./ sum(F_svd.S .^ 2)
+pct1     = round(var_expl[1], digits=1)
+pct2     = round(var_expl[2], digits=1)
+
+# -- MAP cluster labels from marginalised Gibbs (post burn-in) --
+z_map       = point_estimate_clustering(res_marg.c; method=:MAP)
+clust_sizes = countmap(z_map)
+keep_mask   = [clust_sizes[z_map[i]] > 1 for i in 1:n]
+keep_idx    = findall(keep_mask)
+n_keep      = length(keep_idx)
+
+unique_cl = sort(unique(z_map[keep_idx]))
+K_ns      = length(unique_cl)
+remap     = Dict(c => k for (k, c) in enumerate(unique_cl))
+z_ns      = [remap[z_map[i]] for i in keep_idx]
+
+println("\nCluster plots: $(n - n_keep) singletons removed, " *
+        "$n_keep countries, $K_ns non-trivial clusters")
+
+# Local indices within keep_idx belonging to cluster k
+cl_idx_fn(k) = [j for (j, z) in enumerate(z_ns) if z == k]
+
+# ── Plot 1: PC1 vs count (log scale), coloured by MAP cluster ───────────────
+p_pc1_count = plot(
+    xlabel = "PC1 ($pct1% var explained)",
+    ylabel = "People in modern slavery",
+    title  = "PC1 vs Count — MAP clusters (singletons excluded)",
+    legend = :outerright,
+    yscale = :log10,
+    size   = (900, 500)
+)
+for k in 1:K_ns
+    ji = cl_idx_fn(k)
+    scatter!(p_pc1_count,
+        pc1[keep_idx[ji]], Float64.(y[keep_idx[ji]]);
+        label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
+    )
+end
+savefig(p_pc1_count, "results/walkfree/figures/cluster_pc1_vs_count.png")
+
+# ── Plot 2: PC1 vs PC2, coloured by MAP cluster ─────────────────────────────
+p_pca = plot(
+    xlabel = "PC1 ($pct1% var explained)",
+    ylabel = "PC2 ($pct2% var explained)",
+    title  = "PCA — MAP clusters (singletons excluded)",
+    legend = :outerright,
+    size   = (900, 500)
+)
+for k in 1:K_ns
+    ji = cl_idx_fn(k)
+    scatter!(p_pca,
+        pc1[keep_idx[ji]], pc2[keep_idx[ji]];
+        label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
+    )
+end
+savefig(p_pca, "results/walkfree/figures/cluster_pca.png")
+
+# ── Posterior directed link probabilities P(c[i] = j) ──────────────────────
+# link_prob[i, j] = fraction of posterior samples where customer i links to j
+link_prob = zeros(Float64, n, n)
+for s in axes(res_marg.c, 1)
+    for i in 1:n
+        j = res_marg.c[s, i]
+        link_prob[i, j] += 1.0
+    end
+end
+link_prob ./= size(res_marg.c, 1)
+
+link_thresh = 0.05   # only draw arrows where P(c[i]=j) ≥ this
+
+# ── Plot 3: PC1 vs PC2 with directed arrows for P(c[i] = j) ────────────────
+p_arrows = plot(
+    xlabel = "PC1 ($pct1% var explained)",
+    ylabel = "PC2 ($pct2% var explained)",
+    title  = "Posterior link probabilities P(cᵢ=j) — singletons excluded",
+    legend = :outerright,
+    size   = (900, 550)
+)
+# Draw arrows first so scatter points appear on top
+for i in keep_idx, j in keep_idx
+    i == j && continue
+    p_ij = link_prob[i, j]
+    p_ij < link_thresh && continue
+    plot!(p_arrows,
+        [pc1[i], pc1[j]], [pc2[i], pc2[j]];
+        label     = "",
+        color     = :gray,
+        alpha     = min(p_ij * 2, 0.8),
+        linewidth = 0.5 + 2.5 * p_ij,
+        arrow     = true
+    )
+end
+# Scatter points on top, coloured by MAP cluster
+for k in 1:K_ns
+    ji = cl_idx_fn(k)
+    scatter!(p_arrows,
+        pc1[keep_idx[ji]], pc2[keep_idx[ji]];
+        label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
+    )
+end
+savefig(p_arrows, "results/walkfree/figures/cluster_link_arrows.png")
+
+println("Cluster visualisation plots saved to results/walkfree/figures/")
 println("\nDone.")

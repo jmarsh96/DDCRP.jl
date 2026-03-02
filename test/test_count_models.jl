@@ -297,7 +297,7 @@ Random.seed!(43)
     # ========================================================================
     @testset "NBPopulationRatesMarg" begin
         model = NBPopulationRatesMarg()
-        priors = NBPopulationRatesMargPriors(1.0, 1.0, 0.1)
+        priors = NBPopulationRatesMargPriors(2.0, 1.0, 1.0, 0.1)  # γ_a, γ_b, r_a, r_b
 
         # Population/exposure data (integer populations, count data)
         E = rand(100:10_000, n)
@@ -310,8 +310,9 @@ Random.seed!(43)
             @test state isa NBPopulationRatesMargState
             @test length(state.c) == n
             @test state.r > 0
-            # Marginalised model: no λ or γ_dict
-            @test !hasproperty(state, :λ)
+            # Has λ (individual rates); γ_k is marginalised (no γ_dict)
+            @test hasproperty(state, :λ)
+            @test all(state.λ .> 0)
             @test !hasproperty(state, :γ_dict)
         end
 
@@ -349,6 +350,7 @@ Random.seed!(43)
 
             @test samples isa NBPopulationRatesMargSamples
             @test size(samples.c) == (200, n)
+            @test size(samples.λ) == (200, n)
             @test length(samples.r) == 200
             @test all(isfinite.(samples.logpost))
         end
@@ -359,7 +361,7 @@ Random.seed!(43)
     # ========================================================================
     @testset "NBPopulationRates" begin
         model = NBPopulationRates()
-        priors = NBPopulationRatesPriors(20.0, 1.0, 0.1)
+        priors = NBPopulationRatesPriors(2.0, 1.0, 1.0, 0.1)  # γ_a, γ_b, r_a, r_b
 
         # Same population/exposure data as above
         E = rand(100:10_000, n)
@@ -372,9 +374,10 @@ Random.seed!(43)
             @test state isa NBPopulationRatesState
             @test length(state.c) == n
             @test state.r > 0
+            @test hasproperty(state, :λ)
+            @test all(state.λ .> 0)
             @test !isempty(state.γ_dict)
             @test all(v > 0 for v in values(state.γ_dict))
-            @test !hasproperty(state, :λ)
         end
 
         @testset "Table Contribution" begin
@@ -401,11 +404,14 @@ Random.seed!(43)
             opts = MCMCOptions()
 
             γ_before = Dict(k => v for (k, v) in state.γ_dict)
+            λ_before = copy(state.λ)
 
             update_params!(model, state, data_pop, priors, tables, log_DDCRP, opts)
             @test state.r > 0
+            @test all(state.λ .> 0)
             @test all(v > 0 for v in values(state.γ_dict))
-            # Conjugate Gibbs should change γ values
+            # Conjugate Gibbs should change λ and γ values
+            @test any(state.λ[i] != λ_before[i] for i in eachindex(λ_before))
             @test any(state.γ_dict[k] != γ_before[k] for k in keys(γ_before))
         end
 
@@ -436,6 +442,7 @@ Random.seed!(43)
 
             @test samples isa NBPopulationRatesSamples
             @test size(samples.c) == (200, n)
+            @test size(samples.λ) == (200, n)
             @test size(samples.γ) == (200, n)
             @test length(samples.r) == 200
             @test all(isfinite.(samples.logpost))
