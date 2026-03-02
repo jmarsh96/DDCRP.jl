@@ -90,6 +90,10 @@ scale_grid = [0.5, 1.0, 2.0, 5.0, 10.0]
 n_cv       = 4_000
 cv_burnin  = 1_000
 
+# test 
+n_cv = 400
+cv_burnin = 100
+
 cv_opts = MCMCOptions(
     n_samples         = n_cv,
     verbose           = false,
@@ -99,10 +103,11 @@ cv_opts = MCMCOptions(
 
 waic_grid = fill(Inf, length(α_grid), length(scale_grid))
 lpml_grid = fill(-Inf, length(α_grid), length(scale_grid))
+meank_grid = fill(-Inf, length(α_grid), length(scale_grid))
 
 # Launch distributed workers for parallel CV
 if nprocs() == 1
-    n_workers = 2
+    n_workers = 8
     addprocs(n_workers; exeflags = ["--project=$(Base.active_project())"])
     @everywhere using DDCRP
     @everywhere using Statistics
@@ -134,6 +139,7 @@ end
 for r in cv_results
     waic_grid[r.ia, r.is] = r.waic
     lpml_grid[r.ia, r.is] = r.lpml
+    meank_grid[r.ia, r.is] = r.mean_k
     @printf "  α=%-5.1f  scale=%-6.1f  WAIC=%10.2f  LPML=%10.2f  mean_k=%6.2f\n" r.α r.scale r.waic r.lpml r.mean_k
 end
 
@@ -148,7 +154,7 @@ cv_df = DataFrame(
     scale = repeat(scale_grid, outer=length(α_grid)),
     waic  = vec(waic_grid),
     lpml  = vec(lpml_grid),
-    mean_k = vec(mean_k_grid)
+    mean_k = vec(meank_grid)
 )
 CSV.write("results/walkfree/cv_grid.csv", cv_df)
 
@@ -164,10 +170,13 @@ p_cv_lpml = heatmap(scale_grid, α_grid, lpml_grid,
 savefig(p_cv_lpml, "results/walkfree/figures/cv_lpml_surface.png")
 
 ddcrp_params = DDCRPParams(α_opt, scale_opt)
-ddcrp_params = DDCRPParams(0.1, scale_opt) # testing
 
 n_samples  = 20_000
 n_burnin   = 5_000
+
+# testing
+n_samples = 5_000
+n_burnin = 1_000
 
 base_opts = MCMCOptions(
     n_samples         = n_samples,
@@ -255,12 +264,12 @@ results = [res_marg, res_rj]
 
 all_k = sort(unique(vcat(res_marg.k, res_rj.k)))
 println("\n=== K distribution comparison ===")
-@printf "%-5s  %-14s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC-NoUpd"
-println("-" * 55)
+@printf "%-5s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC-NoUpd"
+println("-" ^ 55)
 for k in all_k
     p1 = round(mean(res_marg.k .== k), digits=4)
     p2 = round(mean(res_rj.k  .== k), digits=4)
-    @printf "%-5d  %-14.4f  %-14.4f  %-14.4f\n" k p1 p2
+    @printf "%-5d  %-14.4f  %-14.4f\n" k p1 p2
 end
 
 # ============================================================================
