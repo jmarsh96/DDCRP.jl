@@ -25,6 +25,17 @@ using JLD2
 Random.seed!(2025)
 
 # ============================================================================
+# Test-run mode
+# Pass `--test` on the command line (or set TEST_RUN=true) to use a small
+# grid and few iterations for a quick smoke-test of the full pipeline.
+# ============================================================================
+
+const TEST_RUN = "--test" in ARGS || get(ENV, "TEST_RUN", "false") == "true"
+if TEST_RUN
+    println("*** TEST RUN MODE — reduced grid & iteration counts ***")
+end
+
+# ============================================================================
 # 0. Output directories
 # ============================================================================
 
@@ -87,10 +98,17 @@ priors_unmarg = NBPopulationRatesPriors(2.0, 0.1, 1.0, 0.1)
 # 2b. Cross-validation for optimal DDCRP hyperparameters (α, scale)
 # ============================================================================
 
-α_grid = 0.1:0.5:5.0
-scale_grid = 0.5:0.5:10.0
-n_cv       = 10_000
-cv_burnin  = 2_000
+if TEST_RUN
+    α_grid     = [0.5, 2.5, 5.0]
+    scale_grid = [1.0, 5.0, 10.0]
+    n_cv       = 500
+    cv_burnin  = 100
+else
+    α_grid     = 0.1:0.5:5.0
+    scale_grid = 0.5:0.5:10.0
+    n_cv       = 10_000
+    cv_burnin  = 2_000
+end
 
 cv_opts = MCMCOptions(
     n_samples         = n_cv,
@@ -183,8 +201,13 @@ savefig(p_cv_lpml, "results/walkfree/figures/cv_lpml_surface.png")
 
 ddcrp_params = DDCRPParams(α_opt, scale_opt)
 
-n_samples  = 160_000
-n_burnin   = 10_000
+if TEST_RUN
+    n_samples = 2_000
+    n_burnin  = 500
+else
+    n_samples = 160_000
+    n_burnin  = 10_000
+end
 
 base_opts = MCMCOptions(
     n_samples         = n_samples,
