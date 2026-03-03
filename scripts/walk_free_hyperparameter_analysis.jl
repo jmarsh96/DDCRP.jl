@@ -38,7 +38,8 @@ end
 # Load packages on all workers (including main process)
 # ============================================================================
 
-@everywhere using DDCRP, JLD2
+@everywhere using DDCRP
+@everywhere using JLD2: jldsave
 
 # ============================================================================
 # Helper functions and per-run logic — defined on all workers
@@ -76,9 +77,9 @@ end
             opts = opts,
         )
         fname = "alpha_$(_fmt(α_val))_scale_$(_fmt(s_val)).jld2"
-        @save joinpath(outdir, fname) samples diag ddcrp_params priors
+        jldsave(joinpath(outdir, fname); samples, diag, ddcrp_params, priors)
         samples_thinned = _thin_samples(samples, thin_factor)
-        @save joinpath(outdir_thinned, fname) samples_thinned diag ddcrp_params priors
+        jldsave(joinpath(outdir_thinned, fname); samples_thinned, diag, ddcrp_params, priors)
         return (α_val, s_val, diag.total_time)
     end
 
