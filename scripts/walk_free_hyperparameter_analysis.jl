@@ -135,10 +135,8 @@ const thin_factor = 10
 
 if TEST_RUN
     n_samples = 2_000
-    n_burnin  = 500
 else
-    n_samples = 330_000
-    n_burnin  = 30_000
+    n_samples = 125_000
 end
 
 # α_ddcrp and s_ddcrp are NOT in infer_params — they are held fixed.
@@ -153,8 +151,12 @@ opts = MCMCOptions(
 )
 
 # Hyperparameter grid
-α_values = [0.5, 1.0, 5.0, 10.0, 50.0]
-s_values = [1.0, 5.0, 10.0, 20.0, 50.0]
+# s is the decay scale: exp(-d*s). With standardised 5D Euclidean distances
+# (typical range ~1–5), the decay half-life is log(2)/s.
+# Small s (0.1–0.5) → long range, countries can link across larger distances.
+# Large s (5–50)    → short range, only very close countries link.
+α_values = 0.5:0.5:10.0
+s_values = 0.5:0.5:5.0
 combinations = vec([(α, s) for α in α_values, s in s_values])
 
 outdir         = "results/walkfree_hyperparameters"
@@ -165,7 +167,7 @@ mkpath(outdir_thinned)
 println("\nRunning $(length(combinations)) chains " *
         "($(length(α_values)) α × $(length(s_values)) s values)")
 println("Workers:     $(nworkers())")
-println("Samples:     $n_samples  |  burn-in: $n_burnin  |  thin_factor: $thin_factor")
+println("Samples:     $n_samples  | thin_factor: $thin_factor")
 println("Outputs:     $outdir/")
 println("             $outdir_thinned/\n")
 
