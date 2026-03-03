@@ -27,7 +27,7 @@ end
 using Distributed
 
 if USE_SLURM
-    using ClusterManagers
+    using SlurmClusterManager
     addprocs(SlurmClusterManager(); exeflags="--project=$(Base.active_project())")
     println("SLURM: $(nworkers()) worker(s) added")
 else
