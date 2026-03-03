@@ -28,7 +28,7 @@ using Distributed
 
 if USE_SLURM
     using SlurmClusterManager
-    addprocs(SlurmClusterManager(); exeflags="--project=$(Base.active_project())")
+    addprocs(SlurmManager(); exeflags="--project=$(Base.active_project())")
     println("SLURM: $(nworkers()) worker(s) added")
 else
     addprocs(4; exeflags="--project=$(Base.active_project())")
