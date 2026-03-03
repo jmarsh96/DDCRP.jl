@@ -112,6 +112,8 @@ struct GammaClusterShapeMargSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     α::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 # ============================================================================
@@ -541,7 +543,9 @@ function allocate_samples(::GammaClusterShapeMarg, n_samples::Int, n::Int)
     GammaClusterShapeMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # α (per observation)
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

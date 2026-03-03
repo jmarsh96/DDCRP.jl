@@ -93,6 +93,8 @@ struct NBGammaPoissonClusterRMargSamples{T<:Real} <: AbstractMCMCSamples
     λ::Matrix{T}
     r::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 # ============================================================================
@@ -405,7 +407,9 @@ function allocate_samples(::NBGammaPoissonClusterRMarg, n_samples::Int, n::Int)
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples, n),        # r (per observation, stores cluster r)
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

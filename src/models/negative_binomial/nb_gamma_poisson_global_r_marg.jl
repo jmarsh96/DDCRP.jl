@@ -87,12 +87,16 @@ MCMC samples container for NBGammaPoissonGlobalRMarg model.
 - `λ::Matrix{T}`: Latent rates (n_samples x n_obs)
 - `r::Vector{T}`: Global dispersion parameter (n_samples)
 - `logpost::Vector{T}`: Log-posterior values (n_samples)
+- `α_ddcrp::Vector{T}`: DDCRP self-link parameter samples (n_samples)
+- `s_ddcrp::Vector{T}`: DDCRP distance scale parameter samples (n_samples)
 """
 struct NBGammaPoissonGlobalRMargSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     λ::Matrix{T}
     r::Vector{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 # ============================================================================
@@ -281,7 +285,9 @@ function allocate_samples(::NBGammaPoissonGlobalRMarg, n_samples::Int, n::Int)
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples),           # r
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

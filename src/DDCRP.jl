@@ -98,6 +98,10 @@ export autocorrelation, summarize_mcmc
 export record_move!, record_pairwise!, finalize!
 export get_parameter_fields, compute_param_summary
 
+# DDCRP hyperparameter sampling
+export compute_R, count_self_links, sample_V!
+export update_α_ddcrp, update_s_ddcrp, update_s_ddcrp_augmented
+
 # Core DDCRP utilities
 export construct_distance_matrix, decay
 export precompute_log_ddcrp, ddcrp_contribution
@@ -148,6 +152,7 @@ include("core/rjmcmc_interface.jl")
 # Inference machinery - proposals and diagnostics (depends on core)
 include("inference/proposals.jl")
 include("inference/diagnostics.jl")
+include("inference/hyperparams.jl")
 
 # Model implementations - Negative Binomial variants
 # (must be loaded before samplers that have specialized methods for them)

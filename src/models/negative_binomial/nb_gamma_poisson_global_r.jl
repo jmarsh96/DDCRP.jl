@@ -97,6 +97,8 @@ struct NBGammaPoissonGlobalRSamples{T<:Real} <: AbstractMCMCSamples
     r::Vector{T}
     m::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -465,7 +467,9 @@ function allocate_samples(::NBGammaPoissonGlobalR, n_samples::Int, n::Int)
         zeros(n_samples, n),        # λ
         zeros(n_samples),           # r
         zeros(n_samples, n),        # m (per observation)
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

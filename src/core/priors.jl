@@ -63,16 +63,39 @@ DDCRP hyperparameters (shared across models).
 - `α::T`: Concentration parameter (self-link probability)
 - `scale::T`: Distance decay scale parameter
 - `decay_fn::Function`: Decay function (default: exponential)
+- `α_a::Union{T,Nothing}`: Gamma shape prior for α (`nothing` = don't infer)
+- `α_b::Union{T,Nothing}`: Gamma rate prior for α
+- `s_a::Union{T,Nothing}`: Gamma shape prior for scale s (`nothing` = don't infer)
+- `s_b::Union{T,Nothing}`: Gamma rate prior for scale s
 """
 struct DDCRPParams{T<:Real}
     α::T
     scale::T
     decay_fn::Function
+    α_a::Union{T, Nothing}
+    α_b::Union{T, Nothing}
+    s_a::Union{T, Nothing}
+    s_b::Union{T, Nothing}
 end
 
 exp_decay(d; scale) = exp(-d * scale)
 
-# Default constructor with exponential decay
+# 2-arg constructor (backward compatible): no priors, hyperparameters are fixed
 function DDCRPParams(α::T, scale::T) where {T<:Real}
-    DDCRPParams(α, scale, exp_decay)
+    DDCRPParams(α, scale, exp_decay, nothing, nothing, nothing, nothing)
+end
+
+# 4-arg constructor: Gamma prior on α only, scale is fixed
+function DDCRPParams(α::T, scale::T, α_a::T, α_b::T) where {T<:Real}
+    DDCRPParams{T}(α, scale, exp_decay, α_a, α_b, nothing, nothing)
+end
+
+# 6-arg constructor: with Gamma priors on α and s, exponential decay
+function DDCRPParams(α::T, scale::T, α_a::T, α_b::T, s_a::T, s_b::T) where {T<:Real}
+    DDCRPParams(α, scale, exp_decay, α_a, α_b, s_a, s_b)
+end
+
+# 7-arg constructor: custom decay function and priors
+function DDCRPParams(α::T, scale::T, decay_fn::Function, α_a::T, α_b::T, s_a::T, s_b::T) where {T<:Real}
+    DDCRPParams{T}(α, scale, decay_fn, α_a, α_b, s_a, s_b)
 end

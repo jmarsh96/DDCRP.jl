@@ -81,6 +81,8 @@ struct PoissonClusterRatesSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     λ::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 # ============================================================================
@@ -270,7 +272,9 @@ function allocate_samples(::PoissonClusterRates, n_samples::Int, n::Int)
     PoissonClusterRatesSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ - stores cluster rate per observation
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

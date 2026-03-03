@@ -121,6 +121,8 @@ struct SkewNormalClusterSamples{T<:Real} <: AbstractMCMCSamples
     ω::Matrix{T}
     α::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -160,12 +162,17 @@ function fixed_dim_param(::SkewNormalCluster, ::Val{:ξ}, ::WeightedMean,
     n_Si   = length(S_i)
 
     ξ_aug_new   = (n_aug * ξ_aug + n_Si * ȳ_Si) / (n_aug + n_Si)
+    log_jac_aug = log(n_aug) - log(n_aug + n_Si)
     n_remaining = n_depl - n_Si
-    ξ_depl_new  = n_remaining > 0 ?
-        (n_depl * ξ_depl - n_Si * ȳ_Si) / n_remaining :
-        ξ_depl  # cluster becomes empty; value unused
+    if n_remaining > 0
+        ξ_depl_new = (n_depl * ξ_depl - n_Si * ȳ_Si) / n_remaining
+        log_jac    = log_jac_aug + log(n_depl) - log(n_remaining)
+    else
+        ξ_depl_new = ξ_depl  # cluster becomes empty; value unused
+        log_jac    = log_jac_aug
+    end
 
-    return ξ_depl_new, ξ_aug_new, 0.0  # no positivity check — ξ ∈ ℝ
+    return ξ_depl_new, ξ_aug_new, log_jac  # no positivity check — ξ ∈ ℝ
 end
 
 function fixed_dim_param(::SkewNormalCluster, ::Val{:ω}, ::WeightedMean,
@@ -186,6 +193,7 @@ function fixed_dim_param(::SkewNormalCluster, ::Val{:ω}, ::WeightedMean,
     ω_aug_sq_new = (n_aug * ω_aug^2 + n_Si * var_Si) / (n_aug + n_Si)
     ω_aug_new    = sqrt(ω_aug_sq_new)
 
+    log_jac_aug = log(n_aug) - log(n_aug + n_Si) + log(ω_aug) - log(ω_aug_new)
     n_remaining = n_depl - n_Si
     if n_remaining > 0
         ω_depl_sq_new_num = n_depl * ω_depl^2 - n_Si * var_Si
@@ -193,11 +201,13 @@ function fixed_dim_param(::SkewNormalCluster, ::Val{:ω}, ::WeightedMean,
             return ω_depl, ω_aug_new, -Inf  # reject: depleted ω would be non-positive
         end
         ω_depl_new = sqrt(ω_depl_sq_new_num / n_remaining)
+        log_jac    = log_jac_aug + log(n_depl) - log(n_remaining) + log(ω_depl) - log(ω_depl_new)
     else
         ω_depl_new = ω_depl  # cluster becomes empty; value unused
+        log_jac    = log_jac_aug
     end
 
-    return ω_depl_new, ω_aug_new, 0.0
+    return ω_depl_new, ω_aug_new, log_jac
 end
 
 function fixed_dim_param(::SkewNormalCluster, ::Val{:α}, ::WeightedMean,
@@ -214,7 +224,9 @@ function fixed_dim_param(::SkewNormalCluster, ::Val{:α}, ::WeightedMean,
     # Depleted cluster: keep existing α (deconvolution of shape is ill-defined from raw obs)
     α_depl_new = α_depl
 
-    return α_depl_new, α_aug_new, 0.0
+    # Jacobian: det([[n_aug/(n_aug+n_Si), n_Si/(n_aug+n_Si)],[0,1]]) = n_aug/(n_aug+n_Si)
+    log_jac = log(n_aug) - log(n_aug + n_Si)
+    return α_depl_new, α_aug_new, log_jac
 end
 
 # ============================================================================
@@ -1007,7 +1019,9 @@ function allocate_samples(::SkewNormalCluster, n_samples::Int, n::Int)
         zeros(n_samples, n),        # ξ (per observation)
         zeros(n_samples, n),        # ω (per observation)
         zeros(n_samples, n),        # α (per observation)
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

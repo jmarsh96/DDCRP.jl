@@ -88,6 +88,8 @@ struct PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     ρ::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -245,7 +247,9 @@ function allocate_samples(::PoissonPopulationRates, n_samples::Int, n::Int)
     PoissonPopulationRatesSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # ρ - stores cluster ρ per observation
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

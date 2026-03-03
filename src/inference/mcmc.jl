@@ -114,6 +114,16 @@ function mcmc(
     extract_samples!(model, state, samples, 1)
     samples.logpost[1] = posterior(model, data, state, priors, log_DDCRP)
 
+    # DDCRP hyperparameter inference setup
+    α_current = ddcrp_params.α
+    s_current = ddcrp_params.scale
+    infer_α = should_infer(opts, :α_ddcrp) && !isnothing(ddcrp_params.α_a)
+    infer_s = should_infer(opts, :s_ddcrp) && !isnothing(ddcrp_params.s_a)
+    infer_ddcrp = infer_α || infer_s
+    V = infer_ddcrp ? zeros(n) : Float64[]
+    samples.α_ddcrp[1] = α_current
+    samples.s_ddcrp[1] = s_current
+
     # Main MCMC loop
     for iter in 2:opts.n_samples
         tables = table_vector(state.c)
@@ -123,6 +133,25 @@ function mcmc(
 
         # Update customer assignments (gibbs or rjmcmc based on model/proposal)
         result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts)
+
+        # Update DDCRP hyperparameters if requested
+        if infer_ddcrp
+            R = compute_R(s_current, D)
+            sample_V!(V, α_current, R)
+            if infer_α
+                n_self = count_self_links(state.c)
+                α_current = update_α_ddcrp(n_self, V, ddcrp_params)
+            end
+            if infer_s
+                prop_sd_s = get_prop_sd(opts, :s_ddcrp)
+                if infer_α
+                    s_current = update_s_ddcrp_augmented(s_current, V, R, state.c, D, ddcrp_params, prop_sd_s)
+                else
+                    s_current = update_s_ddcrp(s_current, α_current, state.c, D, ddcrp_params, prop_sd_s)
+                end
+            end
+            log_DDCRP = precompute_log_ddcrp(ddcrp_params.decay_fn, α_current, s_current, D)
+        end
 
         # Record diagnostics if returned
         if opts.track_diagnostics && !isnothing(diag) && !isnothing(result)
@@ -137,6 +166,8 @@ function mcmc(
         # Store samples
         extract_samples!(model, state, samples, iter)
         samples.logpost[iter] = posterior(model, data, state, priors, log_DDCRP)
+        samples.α_ddcrp[iter] = α_current
+        samples.s_ddcrp[iter] = s_current
 
         # Progress
         if opts.verbose && (iter % 100 == 0 || iter == 1)

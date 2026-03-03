@@ -81,6 +81,8 @@ struct BinomialClusterProbSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     p::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -297,7 +299,9 @@ function allocate_samples(::BinomialClusterProb, n_samples::Int, n::Int)
     BinomialClusterProbSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # p - stores cluster prob per observation
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

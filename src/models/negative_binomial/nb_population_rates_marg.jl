@@ -109,6 +109,8 @@ struct NBPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     λ::Matrix{T}
     r::Vector{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 requires_trials(::NBPopulationRatesMarg) = true
@@ -322,7 +324,9 @@ function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
         zeros(n_samples),           # r
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

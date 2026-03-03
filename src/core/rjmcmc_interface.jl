@@ -164,8 +164,9 @@ end
 
 Deterministically update a parameter as a weighted average.
 Uses the mean of raw observations in S_i as the summary statistic.
-Returns lpr = 0.0 (deterministic, unit Jacobian). Returns lpr = -Inf to
-force rejection if the depleted parameter would become non-positive.
+Returns lpr = log|J|, the log Jacobian determinant of the deterministic bijection
+(n_aug/(n_aug+n_Si)) * (n_depl/n_remaining). Returns lpr = -Inf to force rejection
+if the depleted parameter would become non-positive.
 
 Models can override this for parameters where a different summary statistic
 is appropriate (e.g., using latent variables instead of raw observations).
@@ -184,14 +185,18 @@ function fixed_dim_param(_model::LikelihoodModel, ::Val{name}, ::WeightedMean,
     n_Si   = length(S_i)
 
     param_aug_new = (n_aug * param_aug + n_Si * ȳ_Si) / (n_aug + n_Si)
+    log_jac_aug = log(n_aug) - log(n_aug + n_Si)
 
     n_remaining = n_depl - n_Si
     if n_remaining > 0
         param_depl_new = (n_depl * param_depl - n_Si * ȳ_Si) / n_remaining
-        lpr = param_depl_new <= 0 ? -Inf : 0.0
+        if param_depl_new <= 0
+            return param_depl_new, param_aug_new, -Inf
+        end
+        lpr = log_jac_aug + log(n_depl) - log(n_remaining)
     else
         param_depl_new = param_depl  # depleted cluster will be empty; value unused
-        lpr = 0.0
+        lpr = log_jac_aug
     end
 
     return param_depl_new, param_aug_new, lpr

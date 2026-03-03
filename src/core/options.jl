@@ -40,7 +40,9 @@ function MCMCOptions(;
         :ξ => true,
         :ω => true,
         :α => true,
-        :h => true
+        :h => true,
+        :α_ddcrp => false,
+        :s_ddcrp => false,
     ),
     prop_sds::Dict{Symbol, Float64} = Dict{Symbol, Float64}(
         :λ => 0.5,
@@ -48,7 +50,8 @@ function MCMCOptions(;
         :m => 0.5,
         :p => 0.5,
         :ω => 0.3,
-        :α => 0.5
+        :α => 0.5,
+        :s_ddcrp => 0.3,
     ),
     track_diagnostics::Bool = true,
     track_pairwise::Bool = false,

@@ -96,6 +96,8 @@ struct NBMeanDispersionClusterRSamples{T<:Real} <: AbstractMCMCSamples
     r::Matrix{T}
     m::Matrix{T}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -433,7 +435,9 @@ function allocate_samples(::NBMeanDispersionClusterR, n_samples::Int, n::Int)
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # r (per observation)
         zeros(n_samples, n),        # m (per observation)
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 

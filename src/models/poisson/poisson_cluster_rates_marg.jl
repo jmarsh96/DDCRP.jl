@@ -77,6 +77,8 @@ MCMC samples container for PoissonClusterRatesMarg model.
 struct PoissonClusterRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     logpost::Vector{T}
+    α_ddcrp::Vector{T}
+    s_ddcrp::Vector{T}
 end
 
 
@@ -186,7 +188,9 @@ Allocate storage for MCMC samples.
 function allocate_samples(::PoissonClusterRatesMarg, n_samples::Int, n::Int)
     PoissonClusterRatesMargSamples(
         zeros(Int, n_samples, n),   # c
-        zeros(n_samples)            # logpost
+        zeros(n_samples),           # logpost
+        zeros(n_samples),           # α_ddcrp
+        zeros(n_samples),           # s_ddcrp
     )
 end
 
