@@ -285,7 +285,8 @@ end
 """
     update_λ!(model::NBGammaPoissonGlobalR, i, data, state, priors, tables; prop_sd=0.5)
 
-Update latent rate λ[i] using Metropolis-Hastings with Normal proposal.
+Update latent rate λ[i] using Metropolis-Hastings with log-normal random walk proposal.
+`prop_sd` is the proposal standard deviation on the log scale.
 """
 function update_λ!(
     model::NBGammaPoissonGlobalR,
@@ -298,9 +299,7 @@ function update_λ!(
 )
     y = observations(data)
     λ_can = copy(state.λ)
-    λ_can[i] = rand(Normal(state.λ[i], prop_sd))
-
-    λ_can[i] <= 0 && return
+    λ_can[i] = state.λ[i] * exp(randn() * prop_sd)
 
     table_i = findfirst(x -> i in x, tables)
     state_can = NBGammaPoissonGlobalRState(state.c, λ_can, state.m_dict, state.r)
@@ -310,7 +309,9 @@ function update_λ!(
     logpost_candidate = likelihood_contribution(y, λ_can) +
                         table_contribution(model, tables[table_i], state_can, data, priors)
 
-    log_accept_ratio = logpost_candidate - logpost_current
+    # Log-normal random walk: include Jacobian log(λ_can) - log(λ_current)
+    log_accept_ratio = logpost_candidate - logpost_current +
+                       log(λ_can[i]) - log(state.λ[i])
 
     if log(rand()) < log_accept_ratio
         state.λ[i] = λ_can[i]

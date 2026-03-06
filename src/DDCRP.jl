@@ -43,6 +43,7 @@ export NBMeanDispersionClusterR, NBMeanDispersionClusterRState, NBMeanDispersion
 export NBPopulationRatesMarg, NBPopulationRatesMargState, NBPopulationRatesMargPriors, NBPopulationRatesMargSamples
 export NBPopulationRates, NBPopulationRatesState, NBPopulationRatesPriors, NBPopulationRatesSamples
 export update_cluster_gamma_rates!
+export NBMeanDispersionPopulation, NBMeanDispersionPopulationState, NBMeanDispersionPopulationPriors, NBMeanDispersionPopulationSamples
 
 # Poisson model variants
 export PoissonClusterRates, PoissonClusterRatesState, PoissonClusterRatesPriors, PoissonClusterRatesSamples
@@ -164,6 +165,7 @@ include("models/negative_binomial/nb_mean_dispersion_global_r.jl")
 include("models/negative_binomial/nb_mean_dispersion_cluster_r.jl")
 include("models/negative_binomial/nb_population_rates_marg.jl")
 include("models/negative_binomial/nb_population_rates.jl")
+include("models/negative_binomial/nb_mean_dispersion_population.jl")
 
 # Model implementations - Poisson variants
 include("models/poisson/poisson_cluster_rates.jl")

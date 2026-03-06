@@ -79,7 +79,8 @@ function mcmc(
     priors::AbstractPriors,
     proposal::BirthProposal = PriorProposal();
     fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
-    opts::MCMCOptions = MCMCOptions()
+    opts::MCMCOptions = MCMCOptions(),
+    init_c::Union{Nothing, Vector{Int}} = nothing
 )
     # Validate data matches model requirements
     if requires_trials(model) && !has_trials(data)
@@ -102,6 +103,9 @@ function mcmc(
 
     # Initialize state (dispatches on model type)
     state = initialise_state(model, data, ddcrp_params, priors)
+    if !isnothing(init_c)
+        state.c = copy(init_c)
+    end
 
     # Allocate sample storage (dispatches on model type)
     samples = allocate_samples(model, opts.n_samples, n)
@@ -203,10 +207,11 @@ function mcmc(model::LikelihoodModel, y::AbstractVector, N::Union{Int, AbstractV
               D::AbstractMatrix, ddcrp_params::DDCRPParams, priors::AbstractPriors,
               proposal::BirthProposal = PriorProposal();
               fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
-              opts::MCMCOptions = MCMCOptions())
+              opts::MCMCOptions = MCMCOptions(),
+              init_c::Union{Nothing, Vector{Int}} = nothing)
     data = CountDataWithTrials(y, N, D)
     return mcmc(model, data, ddcrp_params, priors, proposal;
-                fixed_dim_proposal=fixed_dim_proposal, opts=opts)
+                fixed_dim_proposal=fixed_dim_proposal, opts=opts, init_c=init_c)
 end
 
 """Convenience: ContinuousData models (SkewNormal, Gamma, Weibull) with separate y, D."""
