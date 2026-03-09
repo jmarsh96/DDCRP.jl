@@ -169,7 +169,7 @@ opts_nb = MCMCOptions(
 
 opts_poisson = MCMCOptions(
     n_samples         = n_samples,
-    verbose           = true,
+    verbose           = false,
     track_diagnostics = true,
     infer_params      = Dict(:c => true, :α_ddcrp => true, :s_ddcrp => true),
     prop_sds          = Dict(:s_ddcrp => 0.3)
@@ -332,6 +332,8 @@ function run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_
         "$(r_dir)/figures/r$(r_tag)",
         "NB r=$(r_fixed)", :steelblue)
 
+    z_map_r = point_estimate_clustering(c_post_r; method=:MAP)
+
     eff_rates_r = λ_post_r .* Float64.(P)'
     ypred_r     = ppc_from_rates(eff_rates_r, P)
     ll_mat_r    = compute_ll_matrix(y, eff_rates_r)
@@ -359,6 +361,7 @@ function run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_
         crps      = crps_r[2],
         mal       = mal_r,
         time_s    = t_elapsed,
+        z_map     = z_map_r,
     )
 end
 
@@ -505,6 +508,16 @@ for res in grid_results
     @printf "  r=%-5.1f  K_mean=%-6.2f  WAIC=%-12.2f  ELPD-LOO=%-12.2f  CRPS=%.4f\n" res.r res.mean_K res.waic res.elpd_loo res.crps
 end
 
+println("\n[Section 5] MAP cluster membership for each r value:")
+for res in grid_results
+    csizes = countmap(res.z_map)
+    println("\n  === NB r=$(res.r) — MAP clusters ===")
+    for (cl, cnt) in sort(collect(csizes), by=x -> x[2])
+        members = sort(String.(df_clean.Country[findall(==(cl), res.z_map)]))
+        println("    Cluster $cl (n=$cnt): " * join(members, ", "))
+    end
+end
+
 # ============================================================================
 # Section 6 – Model comparison and r selection
 # ============================================================================
@@ -539,11 +552,11 @@ end
 poisson_row = filter(r -> r.model == "Poisson", df_grid)[1, :]
 println("\n  Poisson: WAIC=$(round(poisson_row.waic, digits=2))  ELPD-LOO=$(round(poisson_row.elpd_loo, digits=2))  CRPS=$(round(poisson_row.crps, digits=4))  mean_K=$(round(poisson_row.mean_K, digits=2))")
 
-best_idx = argmin([res.waic for res in grid_results])
+best_idx = argmax([res.elpd_loo for res in grid_results])
 best_r   = grid_results[best_idx].r
-println("\n  Best r (by WAIC) = $(best_r)")
-@printf "  Best WAIC = %.2f\n" grid_results[best_idx].waic
-@printf "  ΔWAIC (Poisson - best NB) = %.2f\n" (poisson_row.waic - grid_results[best_idx].waic)
+println("\n  Best r (by ELPD-LOO) = $(best_r)")
+@printf "  Best ELPD-LOO = %.2f\n" grid_results[best_idx].elpd_loo
+@printf "  ΔELPD-LOO (best NB - Poisson) = %.2f\n" (grid_results[best_idx].elpd_loo - poisson_row.elpd_loo)
 
 r_vals_plot = [res.r for res in grid_results]
 
@@ -585,7 +598,7 @@ println("\n[Section 7] Extended post-processing for best r = $(best_r)")
 
 opts_nb_verbose = MCMCOptions(
     n_samples         = n_samples,
-    verbose           = true,
+    verbose           = false,
     track_diagnostics = true,
     infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
     prop_sds          = Dict(:s_ddcrp => 0.3)
@@ -763,7 +776,7 @@ println("\n[Section 8] RJMCMC confirmation with best r=$(best_r)")
 
 opts_rj = MCMCOptions(
     n_samples         = n_samples,
-    verbose           = true,
+    verbose           = false,
     track_diagnostics = true,
     infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
     prop_sds          = Dict(:s_ddcrp => 0.3)
@@ -835,8 +848,8 @@ println("\nRJMCMC vs Marg-Gibbs comparison figures saved to results/walkfree/fig
 
 println("\n" * "="^60)
 println("Analysis complete.")
-println("  Best r (WAIC): $(best_r)")
-@printf "  ΔWAIC (Poisson - NB best): %.2f\n" (poisson_row.waic - grid_results[best_idx].waic)
+println("  Best r (ELPD-LOO): $(best_r)")
+@printf "  ΔELPD-LOO (best NB - Poisson): %.2f\n" (grid_results[best_idx].elpd_loo - poisson_row.elpd_loo)
 @printf "  Poisson mean K: %.2f,  NB best mean K: %.2f\n" mean(k_post_p) mean(k_post_b)
 println("  Marg-Gibbs K (r=$(best_r)):  mean=$(round(mean(k_post_b), digits=2))")
 println("  RJMCMC K (r=$(best_r)):       mean=$(round(mean(k_post_rj), digits=2))")
