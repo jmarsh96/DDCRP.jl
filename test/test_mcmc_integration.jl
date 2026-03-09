@@ -354,7 +354,7 @@
             P = rand(n) .* 1000 .+ 100
             y_pop = rand.(Poisson.(P .* 0.01))
 
-            pop_data = CountDataWithTrials(y_pop, round.(Int, P), data.D)
+            pop_data = CountDataWithPopulation(y_pop, round.(Int, P), data.D)
             state = initialise_state(model, pop_data, ddcrp_params, priors)
             @test state isa PoissonPopulationRatesState
             @test !isempty(state.ρ_dict)

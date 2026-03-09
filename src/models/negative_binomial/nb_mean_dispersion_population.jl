@@ -24,7 +24,7 @@
 # γ_k is therefore sampled via Metropolis-Hastings with a log-normal random walk.
 #
 # Parameters: c (assignments), γ_k (cluster rates), r (global dispersion)
-# Requires: exposure/population data P_i via CountDataWithTrials
+# Requires: exposure/population data P_i via CountDataWithPopulation
 # ============================================================================
 
 using Distributions, SpecialFunctions, Random, Statistics
@@ -43,7 +43,7 @@ a cluster-level rate and P_i is the population exposure. Dispersion r is shared
 globally. Unlike NBPopulationRatesMarg, there are no latent Poisson rates; the
 NegBin likelihood is used directly and γ_k is sampled via Metropolis-Hastings.
 
-Requires CountDataWithTrials (population/exposure vector P).
+Requires CountDataWithPopulation (population/exposure vector P).
 
 Parameters:
 - γ_k: Cluster rates (InverseGamma prior)
@@ -125,7 +125,7 @@ end
 # ============================================================================
 
 is_marginalised(::NBMeanDispersionPopulation) = false
-requires_trials(::NBMeanDispersionPopulation) = true
+requires_population(::NBMeanDispersionPopulation) = true
 
 # ============================================================================
 # RJMCMC Interface
@@ -146,7 +146,7 @@ function fixed_dim_params(
     table_old::Vector{Int},
     table_new::Vector{Int},
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors,
     opts::MCMCOptions
 )
@@ -165,7 +165,7 @@ function sample_birth_params(
     ::PriorProposal,
     S_i::Vector{Int},
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors
 )
     Q = InverseGamma(priors.γ_a, priors.γ_b)
@@ -184,7 +184,7 @@ function birth_params_logpdf(
     params_old::NamedTuple,
     S_i::Vector{Int},
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors
 )
     return logpdf(InverseGamma(priors.γ_a, priors.γ_b), params_old.γ)
@@ -207,11 +207,11 @@ function table_contribution(
     ::NBMeanDispersionPopulation,
     table::AbstractVector{Int},
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     γ = state.γ_dict[sort(table)]
     r = state.r
 
@@ -235,7 +235,7 @@ Compute full log-posterior for the direct NegBin population model.
 """
 function posterior(
     model::NBMeanDispersionPopulation,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     state::NBMeanDispersionPopulationState,
     priors::NBMeanDispersionPopulationPriors,
     log_DDCRP::AbstractMatrix
@@ -260,7 +260,7 @@ Update all cluster rates via Metropolis-Hastings with log-normal random walk.
 function update_γ!(
     model::NBMeanDispersionPopulation,
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors;
     prop_sd::Float64 = 0.3
 )
@@ -278,7 +278,7 @@ function update_γ_table!(
     model::NBMeanDispersionPopulation,
     table::Vector{Int},
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors;
     prop_sd::Float64 = 0.3
 )
@@ -310,7 +310,7 @@ Update global dispersion r via Metropolis-Hastings with Normal random walk.
 function update_r!(
     model::NBMeanDispersionPopulation,
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -341,7 +341,7 @@ separately by `update_c!` in the main MCMC loop.
 function update_params!(
     model::NBMeanDispersionPopulation,
     state::NBMeanDispersionPopulationState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBMeanDispersionPopulationPriors,
     tables::Vector{Vector{Int}},
     ::AbstractMatrix,
@@ -368,12 +368,12 @@ mean rate (y_i / P_i) within each initial cluster; r is set to 1.0.
 """
 function initialise_state(
     ::NBMeanDispersionPopulation,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     ddcrp_params::DDCRPParams,
     priors::NBMeanDispersionPopulationPriors
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)

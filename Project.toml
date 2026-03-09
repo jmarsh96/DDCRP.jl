@@ -5,6 +5,7 @@ authors = ["Joseph Marsh"]
 
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Clustering = "aaaa29a8-35af-508c-8bc3-b662a17a0fe5"
 ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
@@ -23,6 +24,7 @@ StatsPlots = "f3b207a7-027a-5e70-b257-86293d7955fd"
 XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
 [compat]
+SlurmClusterManager = "0.1"
 ColorSchemes = "3.31.0"
 Distances = "0.10.12"
 XLSX = "0.10.4"

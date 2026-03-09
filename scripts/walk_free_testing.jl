@@ -35,7 +35,7 @@ end
 
 # ── Add workers ───────────────────────────────────────────────────────────────
 if USE_SLURM
-    using ClusterManagers
+    using SlurmClusterManager
     addprocs(SlurmManager())
     println("Added $(nworkers()) SLURM workers")
 elseif N_PROCS >= 1
@@ -477,7 +477,7 @@ end  # @everywhere begin (helpers + run_postprocess)
         task.ddcrp_params, task.priors,
         ConjugateProposal();
         opts   = task.opts,
-        init_c = task.init_c
+        init_params = task.init_params
     )
     println("  [$(task.label)]  MCMC done ($(round(diag.total_time, digits=1)) s)")
 
@@ -662,7 +662,7 @@ for (tag, c_init, col) in [
         D            = D_eucl,
         ddcrp_params = ddcrp_fixed_c,
         opts         = opts_fixed_c,
-        init_c       = c_init,
+        init_params  = Dict{Symbol,Any}(:c => c_init),
         has_s        = false,
         c_fixed      = true,
         color        = col,
@@ -682,7 +682,7 @@ for (i, thresh) in enumerate(window_thresholds)
         D            = D_windows[i],
         ddcrp_params = ddcrp_win_knn,
         opts         = opts_win_knn,
-        init_c       = nothing,
+        init_params  = nothing,
         has_s        = false,
         c_fixed      = false,
         color        = :steelblue,
@@ -701,7 +701,7 @@ for (i, K) in enumerate(knn_values)
         D            = D_knns[i],
         ddcrp_params = ddcrp_win_knn,
         opts         = opts_win_knn,
-        init_c       = nothing,
+        init_params  = nothing,
         has_s        = false,
         c_fixed      = false,
         color        = :darkorange,

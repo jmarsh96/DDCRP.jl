@@ -23,8 +23,9 @@ export NegativeBinomialModel, PoissonModel, BinomialModel  # Abstract model fami
 export AbstractPriors, AbstractMCMCSamples
 
 # Observed data types
-export AbstractObservedData, CountData, CountDataWithTrials
+export AbstractObservedData, CountData, CountDataWithTrials, CountDataWithPopulation
 export observations, distance_matrix, trials, has_trials, nobs, requires_trials
+export population, has_population, requires_population
 
 # Birth proposals for RJMCMC
 export PriorProposal, ConjugateProposal, MomentMatchedProposal
@@ -49,6 +50,7 @@ export NBMeanDispersionPopulation, NBMeanDispersionPopulationState, NBMeanDisper
 export PoissonClusterRates, PoissonClusterRatesState, PoissonClusterRatesPriors, PoissonClusterRatesSamples
 export PoissonClusterRatesMarg, PoissonClusterRatesMargState, PoissonClusterRatesMargPriors, PoissonClusterRatesMargSamples
 export PoissonPopulationRates, PoissonPopulationRatesState, PoissonPopulationRatesPriors, PoissonPopulationRatesSamples
+export PoissonPopulationRatesMarg, PoissonPopulationRatesMargState, PoissonPopulationRatesMargPriors, PoissonPopulationRatesMargSamples
 
 # Binomial model variants
 export BinomialClusterProb, BinomialClusterProbState, BinomialClusterProbPriors, BinomialClusterProbSamples
@@ -126,7 +128,7 @@ export simulate_gamma_data, simulate_weibull_data
 # Analysis utilities
 export calculate_n_clusters, posterior_num_cluster_distribution
 export compute_similarity_matrix, compute_ari_trace, compute_vi_trace, compute_kl_ppd
-export compute_waic, compute_lpml
+export compute_waic, compute_lpml, compute_psis_loo
 export point_estimate_clustering, posterior_summary
 
 # Sampler utilities
@@ -171,6 +173,7 @@ include("models/negative_binomial/nb_mean_dispersion_population.jl")
 include("models/poisson/poisson_cluster_rates.jl")
 include("models/poisson/poisson_cluster_rates_marg.jl")
 include("models/poisson/poisson_population_rates.jl")
+include("models/poisson/poisson_population_rates_marg.jl")
 
 # Model implementations - Binomial variants
 include("models/binomial/binomial_utils.jl")

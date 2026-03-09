@@ -27,7 +27,7 @@
 #   InverseGamma(|S_i|·r + γ_a,  r·Λ_{S_i} + γ_b)
 #
 # Parameters: c, λ (individual rates), γ_k (cluster rates), r
-# Requires: exposure/population data P_i via CountDataWithTrials
+# Requires: exposure/population data P_i via CountDataWithPopulation
 # ============================================================================
 
 using Distributions, SpecialFunctions, Random, Statistics
@@ -46,7 +46,7 @@ rates λ_i | γ_k, r ~ Gamma(r, r/γ_k) and cluster rates γ_k ~ InverseGamma(γ
 Both λ_i and γ_k are maintained explicitly. λ_i and γ_k are updated via exact
 conjugate Gibbs; customer assignments via RJMCMC; r via MH.
 
-Requires exposure data P_i via CountDataWithTrials.
+Requires exposure data P_i via CountDataWithPopulation.
 """
 struct NBPopulationRates <: NegativeBinomialModel end
 
@@ -120,7 +120,7 @@ struct NBPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     s_ddcrp::Vector{T}
 end
 
-requires_trials(::NBPopulationRates) = true
+requires_population(::NBPopulationRates) = true
 
 # ============================================================================
 # RJMCMC Interface
@@ -141,7 +141,7 @@ function fixed_dim_params(
     table_old::Vector{Int},
     table_new::Vector{Int},
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors,
     opts::MCMCOptions
 )
@@ -162,7 +162,7 @@ function sample_birth_params(
     ::PriorProposal,
     S_i::Vector{Int},
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors
 )
     r    = state.r
@@ -188,7 +188,7 @@ function birth_params_logpdf(
     params_old::NamedTuple,
     S_i::Vector{Int},
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors
 )
     r    = state.r
@@ -220,11 +220,11 @@ function table_contribution(
     ::NBPopulationRates,
     table::AbstractVector{Int},
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors
 )
     y  = observations(data)
-    P  = trials(data)
+    P  = population(data)
     γ  = state.γ_dict[sort(table)]
     r  = state.r
     n_k = length(table)
@@ -254,7 +254,7 @@ Compute full log-posterior for the augmented NB population rates model.
 """
 function posterior(
     model::NBPopulationRates,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     state::NBPopulationRatesState,
     priors::NBPopulationRatesPriors,
     log_DDCRP::AbstractMatrix
@@ -278,12 +278,12 @@ Posterior: Gamma(y_i + r,  P_i + r/γ_k) for observation i in cluster k.
 function update_λ_gibbs!(
     ::NBPopulationRates,
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}}
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     r = state.r
     for table in tables
         γ = state.γ_dict[sort(table)]
@@ -305,7 +305,7 @@ Posterior: InverseGamma(n_k·r + γ_a,  r·Λ_k + γ_b) where Λ_k = Σ_{i∈k} 
 function update_γ_ig_rates!(
     ::NBPopulationRates,
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}}
 )
@@ -328,7 +328,7 @@ Update global dispersion r using Metropolis-Hastings with a normal random walk.
 function update_r!(
     model::NBPopulationRates,
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -357,7 +357,7 @@ Assignment updates are handled by update_c!.
 function update_params!(
     model::NBPopulationRates,
     state::NBPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}},
     ::AbstractMatrix,
@@ -387,12 +387,12 @@ r initialised to 1.0.
 """
 function initialise_state(
     ::NBPopulationRates,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     ddcrp_params::DDCRPParams,
     priors::NBPopulationRatesPriors
 )
     y  = observations(data)
-    P  = trials(data)
+    P  = population(data)
     D  = distance_matrix(data)
     n  = length(y)
     r0 = 1.0

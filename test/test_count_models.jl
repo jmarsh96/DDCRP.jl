@@ -302,7 +302,7 @@ Random.seed!(43)
         # Population/exposure data (integer populations, count data)
         E = rand(100:10_000, n)
         y_pop = rand.(Poisson.(E .* 0.01))  # ~1% prevalence
-        data_pop = CountDataWithTrials(y_pop, E, D)
+        data_pop = CountDataWithPopulation(y_pop, E, D)
 
         @testset "State Initialization" begin
             state = initialise_state(model, data_pop, ddcrp_params, priors)
@@ -366,7 +366,7 @@ Random.seed!(43)
         # Same population/exposure data as above
         E = rand(100:10_000, n)
         y_pop = rand.(Poisson.(E .* 0.01))
-        data_pop = CountDataWithTrials(y_pop, E, D)
+        data_pop = CountDataWithPopulation(y_pop, E, D)
 
         @testset "State Initialization" begin
             state = initialise_state(model, data_pop, ddcrp_params, priors)
@@ -569,7 +569,7 @@ end # Negative Binomial Models
 
         # Create population data with integer exposures/population sizes
         E = rand(1:10, n)  # Integer population sizes
-        data_pop = CountDataWithTrials(y, E, D)
+        data_pop = CountDataWithPopulation(y, E, D)
 
         @testset "State Initialization" begin
             state = initialise_state(model, data_pop, ddcrp_params, priors)
@@ -603,6 +603,43 @@ end # Negative Binomial Models
 
             update_cluster_rates!(model, state, data_pop, priors, tables)
             @test all(v > 0 for v in values(state.ρ_dict))
+        end
+    end
+
+    # ========================================================================
+    # PoissonPopulationRatesMarg - Marginalised population-based Poisson
+    # ========================================================================
+    @testset "PoissonPopulationRatesMarg" begin
+        model = PoissonPopulationRatesMarg()
+        priors = PoissonPopulationRatesMargPriors(2.0, 1.0)
+
+        E = rand(1:10, n)
+        data_pop = CountDataWithPopulation(y, E, D)
+
+        @testset "State Initialization" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+
+            @test state isa PoissonPopulationRatesMargState
+            @test length(state.c) == n
+        end
+
+        @testset "Table Contribution" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            tables = table_vector(state.c)
+
+            for table in tables
+                contrib = table_contribution(model, table, state, data_pop, priors)
+                @test isfinite(contrib)
+                @test contrib < 0
+            end
+        end
+
+        @testset "Posterior" begin
+            state = initialise_state(model, data_pop, ddcrp_params, priors)
+            log_DDCRP = precompute_log_ddcrp(decay, ddcrp_params.α, ddcrp_params.scale, D)
+
+            post = posterior(model, data_pop, state, priors, log_DDCRP)
+            @test isfinite(post)
         end
     end
 

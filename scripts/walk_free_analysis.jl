@@ -2,47 +2,80 @@
 # Walk Free Foundation Global Slavery Index - ddCRP Analysis
 # ============================================================================
 #
-# Applies Negative Binomial models with population offsets to the GSI data.
-# Compares:
-#   1. NBPopulationRatesMarg  – Gibbs (marginalised γ_k)
-#   2. NBPopulationRates      – RJMCMC + PriorProposal + NoUpdate
+# Structure:
+#   1. Poisson model — establishes baseline (tends to over-estimate K)
+#   2. NB grid search over r ∈ {0.5, 1.0, ..., 20.0} with r fixed (parallel)
+#   3. Model comparison: WAIC, CRPS, ELPD-LOO, mean K
+#   4. Best-r NB post-processing (extended diagnostics)
+#   5. RJMCMC confirmation at best r
 #
-# α (concentration) and s (decay scale) are jointly inferred.
+# CLI options:
+#   --test         reduced iteration counts (smoke test)
+#   --slurm        use SlurmClusterManager instead of local workers
+#   --nprocs N     number of local worker processes (default: CPU_THREADS ÷ 2)
 # ============================================================================
 
-using DDCRP
-using CSV, DataFrames, Distances
-using Statistics, StatsBase, LinearAlgebra
-using Plots, StatsPlots
-using Random
-using Printf
-using XLSX
-using JLD2
-using Distributions
+using Distributed
 
-Random.seed!(2025)
+# ── CLI args (parsed before addprocs) ─────────────────────────────────────────
+const TEST_RUN  = "--test"  in ARGS || get(ENV, "TEST_RUN", "false") == "true"
+const USE_SLURM = "--slurm" in ARGS
+const N_PROCS   = let idx = findfirst(==("--nprocs"), ARGS)
+    isnothing(idx) ? max(1, Sys.CPU_THREADS ÷ 2) : parse(Int, ARGS[idx + 1])
+end
 
-# ============================================================================
-# Test-run mode
-# Pass `--test` on the command line (or set TEST_RUN=true) to use few
-# iterations for a quick smoke-test of the full pipeline.
-# ============================================================================
-
-const TEST_RUN = "--test" in ARGS || get(ENV, "TEST_RUN", "false") == "true"
 if TEST_RUN
     println("*** TEST RUN MODE — reduced iteration counts ***")
 end
 
+# ── Add workers ───────────────────────────────────────────────────────────────
+if USE_SLURM
+    using SlurmClusterManager
+    addprocs(SlurmManager())
+    println("Added $(nworkers()) SLURM workers")
+else
+    addprocs(N_PROCS)
+    println("Added $(nworkers()) local workers")
+end
+println("Running with $(nworkers()) worker(s)")
+
+# ── Load packages on all processes ────────────────────────────────────────────
+@everywhere begin
+    ENV["GKSwstype"] = "100"   # headless Plots (required on worker nodes)
+    using DDCRP
+    using CSV, DataFrames, Distances
+    using Statistics, StatsBase, LinearAlgebra
+    using Plots, StatsPlots
+    using Random
+    using Printf
+    using XLSX
+    using JLD2
+    using Distributions
+    using SpecialFunctions
+end
+
+Random.seed!(2025)
+
 # ============================================================================
-# 0. Output directories
+# Section 0 – Output directories
 # ============================================================================
 
 mkpath("results/walkfree")
 mkpath("results/walkfree/figures")
 mkpath("results/walkfree/chains")
+mkpath("results/walkfree/poisson/figures")
+mkpath("results/walkfree/poisson/chains")
+mkpath("results/walkfree/poisson/tables")
+mkpath("results/walkfree/nb_grid/figures")
+mkpath("results/walkfree/nb_grid/chains")
+mkpath("results/walkfree/nb_best/figures")
+mkpath("results/walkfree/nb_best/chains")
+mkpath("results/walkfree/nb_best/tables")
+mkpath("results/walkfree/rjmcmc/figures")
+mkpath("results/walkfree/rjmcmc/chains")
 
 # ============================================================================
-# 1. Load and preprocess data
+# Section 1 – Load and preprocess data
 # ============================================================================
 
 println("Loading GSI data...")
@@ -58,26 +91,20 @@ rename!(df, Dict(
     "Effects of conflict" => :effects_of_conflict
 ))
 
-# Remove zero populations
 filter!(x -> x.pop > 0, df)
 
-# Drop rows with missing values in the required columns
 covariate_cols = [:governance_issues, :lack_basic_needs, :inequality,
                   :disenfranchised_groups, :effects_of_conflict]
 required_cols  = [:est_num_ms, :pop, covariate_cols...]
-
 df_clean = dropmissing(df, required_cols)
 println("  Countries after dropping missing: $(nrow(df_clean)) / $(nrow(df))")
 
-y = Int.(df_clean.est_num_ms)   # count of people in modern slavery
-P = Int.(df_clean.pop)          # population exposure
+y = Int.(df_clean.est_num_ms)
+P = Int.(df_clean.pop)
 
-# Standardise covariates to zero-mean, unit-variance before computing distances
 X     = Float64.(Matrix(df_clean[:, covariate_cols]))
 X_std = (X .- mean(X, dims=1)) ./ std(X, dims=1)
-
-# Euclidean distance in covariate space → n×n matrix
-D = pairwise(Euclidean(), X_std', dims=2)
+D     = pairwise(Euclidean(), X_std', dims=2)
 
 let dists = [D[i,j] for i in axes(D,1) for j in (i+1):last(axes(D,2))]
     display(histogram(dists, xlabel="Distance", ylabel="Count",
@@ -89,101 +116,136 @@ println("  n = $n observations")
 println("  y range: [$(minimum(y)), $(maximum(y))]")
 println("  P range: [$(minimum(P)), $(maximum(P))]")
 
-# Distance matrix diagnostics
 D_offdiag = [D[i,j] for i in 1:n, j in 1:n if i != j]
-println("  D (off-diagonal) mean=$(round(mean(D_offdiag),digits=3))  median=$(round(median(D_offdiag),digits=3))  max=$(round(maximum(D_offdiag),digits=3))")
+println("  D (off-diagonal) mean=$(round(mean(D_offdiag),digits=3))  " *
+        "median=$(round(median(D_offdiag),digits=3))  max=$(round(maximum(D_offdiag),digits=3))")
 for s_test in [0.1, 0.5, 1.0, 2.0, 5.0]
     pct = round(100 * mean(exp.(-s_test .* D_offdiag) .> 0.01), digits=1)
     println("    s=$s_test: $(pct)% of pairs have decay > 0.01")
 end
 
+F_svd    = svd(X_std)
+pc1      = F_svd.U[:, 1] .* F_svd.S[1]
+pc2      = F_svd.U[:, 2] .* F_svd.S[2]
+var_expl = 100 .* F_svd.S .^ 2 ./ sum(F_svd.S .^ 2)
+pct1     = round(var_expl[1], digits=1)
+pct2     = round(var_expl[2], digits=1)
+
+y_lo = 10.0 ^ floor(log10(minimum(y)))
+y_hi = 10.0 ^ ceil(log10(maximum(y)))
+
 # ============================================================================
-# 2. DDCRP and prior specification
+# Section 2 – Priors and MCMC options
 # ============================================================================
 
-# NB population priors: γ ~ Gamma(2, rate=0.1) ⟹ E[γ]=20, r ~ Gamma(1, rate=0.1)
+# NB population priors: γ ~ Gamma(1, rate=0.1), r ~ Gamma(1, rate=0.1)
 priors_marg   = NBPopulationRatesMargPriors(1.0, 0.1, 1.0, 0.1)
 priors_unmarg = NBPopulationRatesPriors(1.0, 0.1, 1.0, 0.1)
+priors_poisson = PoissonPopulationRatesMargPriors(1.0, 0.1)
 
 # α prior: Gamma(1, 0.01) — diffuse, E[α]=100
 # s prior: Gamma(1, 0.01) — diffuse, E[s]=100
 ddcrp_params = DDCRPParams(1.0, 1.0, 1.0, 0.01, 1.0, 0.01)
 
 if TEST_RUN
-    n_samples = 2_000
-    n_burnin  = 500
+    n_samples = 500
+    n_burnin  = 100
+    r_grid    = [1.0, 5.0, 10.0]   # minimal grid for smoke test
 else
     n_samples = 30_000
     n_burnin  = 5_000
+    r_grid    = vcat(0.5:0.5:20.0) # 40 values
 end
 
 n_burnin < n_samples || error("n_burnin ($n_burnin) must be less than n_samples ($n_samples)")
 
-opts = MCMCOptions(
+opts_nb = MCMCOptions(
+    n_samples         = n_samples,
+    verbose           = false,
+    track_diagnostics = true,
+    infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:s_ddcrp => 0.3)
+)
+
+opts_poisson = MCMCOptions(
     n_samples         = n_samples,
     verbose           = true,
     track_diagnostics = true,
-    infer_params      = Dict(:r => true, :c => true, :α_ddcrp => true, :s_ddcrp => true),
-    prop_sds          = Dict(:r => 0.5, :s_ddcrp => 0.3)
+    infer_params      = Dict(:c => true, :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:s_ddcrp => 0.3)
 )
-
-colors = [:steelblue, :darkorange]
-labels = ["Marg-Gibbs", "RJMCMC"]
 
 # ============================================================================
-# Pre-run
+# Section 3 – Helper functions (defined @everywhere for use by grid workers)
 # ============================================================================
 
-println("\n[Pre-run] NBPopulationRatesMarg – Gibbs with fixed α=2.0, s=1.0")
-opts_fixed = MCMCOptions(
-    n_samples         = n_samples,
-    verbose           = true,
-    track_diagnostics = true,
-    infer_params      = Dict(:r => true, :c => true, :α_ddcrp => false, :s_ddcrp => false),
-    prop_sds          = Dict(:r => 0.5, :s_ddcrp => 0.3)
-)
+@everywhere begin
 
-ddcrp_params_fixed1 = DDCRPParams(1.0, 1.0, 1.0, 0.01, 1.0, 0.01)  # α fixed at 2.0, s fixed at 1.0
-samples_fixed1, diag_fixed1 = mcmc(
-    NBPopulationRatesMarg(),
-    y, P, D,
-    ddcrp_params_fixed1,
-    NBPopulationRatesMargPriors(1.0, 0.1, 1.0, 0.1),
-    ConjugateProposal();
-    opts = opts_fixed
-)
-
-ddcrp_params_fixed2 = DDCRPParams(1.0, 10.0, 1.0, 0.01, 1.0, 0.01)  # α fixed at 2.0, s fixed at 1.0
-samples_fixed2, diag_fixed2 = mcmc(
-    NBPopulationRatesMarg(),
-    y, P, D,
-    ddcrp_params_fixed2,
-    NBPopulationRatesMargPriors(1.0, 0.1, 1.0, 0.1),
-    ConjugateProposal();
-    opts = opts_fixed
-)
-
-# Helper functions used in PPC sections (defined here for use in pre-run block and section 10)
-function posterior_predictive_samples(λ_post::Matrix{Float64}, P::Vector{Int})
-    n_iter, n_obs = size(λ_post)
+"""Draw Poisson PP samples from (n_iter × n_obs) effective-rate matrix."""
+function ppc_from_rates(eff_rates::Matrix{Float64}, P::Vector{Int})
+    n_iter, n_obs = size(eff_rates)
     y_pred = zeros(Int, n_iter, n_obs)
     for s in 1:n_iter
         for i in 1:n_obs
-            y_pred[s, i] = rand(Poisson(P[i] * λ_post[s, i]))
+            y_pred[s, i] = rand(Poisson(max(eff_rates[s, i], 1e-10)))
         end
     end
     return y_pred
 end
 
-function ppc_scatter_panel(ypred, y, col, title_str)
+"""Build (n_iter × n_obs) matrix of Poisson log-likelihoods from effective-rate matrix."""
+function compute_ll_matrix(y_obs::Vector{Int}, eff_rates::Matrix{Float64})
+    n_iter, n_obs = size(eff_rates)
+    ll = zeros(Float64, n_iter, n_obs)
+    for i in 1:n_obs
+        yi = Float64(y_obs[i])
+        lg = loggamma(yi + 1.0)
+        for s in 1:n_iter
+            μ = max(eff_rates[s, i], 1e-300)
+            ll[s, i] = -μ + yi * log(μ) - lg
+        end
+    end
+    return ll
+end
+
+"""CRPS via the sorted-sample estimator. Returns (per-obs CRPS vector, mean CRPS)."""
+function compute_crps(y_obs::Vector{Int}, y_pred::Matrix{Int})
+    n_iter, n_obs = size(y_pred)
+    crps_i = zeros(n_obs)
+    for i in 1:n_obs
+        yi = Float64(y_obs[i])
+        yp = sort(Float64.(y_pred[:, i]))
+        e_ay = mean(abs.(yp .- yi))
+        s = 0.0
+        for k in 1:n_iter
+            s += (2k - n_iter - 1) * yp[k]
+        end
+        e_aa = s / (n_iter * (n_iter - 1))
+        crps_i[i] = e_ay - e_aa
+    end
+    return (crps_i, mean(crps_i))
+end
+
+"""Mean absolute loss: mean over obs of |pp_mean_i - y_obs_i|."""
+function compute_mal(y_obs::Vector{Int}, y_pred::Matrix{Int})
+    n_obs = length(y_obs)
+    mal = 0.0
+    for i in 1:n_obs
+        mal += abs(mean(Float64.(y_pred[:, i])) - Float64(y_obs[i]))
+    end
+    return mal / n_obs
+end
+
+"""PPC scatter panel: PP mean vs observed, with 95% CI bars, on log-log scale."""
+function ppc_scatter_panel(ypred::Matrix{Int}, y_obs::Vector{Int}, col, title_str)
     pp_mean = vec(mean(Float64.(ypred), dims=1))
-    pp_lo   = [quantile(Float64.(ypred[:, i]), 0.025) for i in 1:length(y)]
-    pp_hi   = [quantile(Float64.(ypred[:, i]), 0.975) for i in 1:length(y)]
-    yf      = Float64.(y)
+    pp_lo   = [quantile(Float64.(ypred[:, i]), 0.025) for i in 1:length(y_obs)]
+    pp_hi   = [quantile(Float64.(ypred[:, i]), 0.975) for i in 1:length(y_obs)]
+    yf      = Float64.(y_obs)
 
     p = plot(title=title_str, xlabel="Observed y", ylabel="PP mean",
              xscale=:log10, yscale=:log10, legend=false)
-    for i in eachindex(y)
+    for i in eachindex(y_obs)
         plot!(p, [yf[i], yf[i]], [max(1.0, pp_lo[i]), max(1.0, pp_hi[i])];
               color=col, alpha=0.3, linewidth=0.8)
     end
@@ -194,166 +256,519 @@ function ppc_scatter_panel(ypred, y, col, title_str)
     return p
 end
 
-mkpath("results/walkfree/fixed_hyperparams")
-mkpath("results/walkfree/fixed_hyperparams/figures")
-
-# ============================================================================
-# Pre-run post-processing: fixed hyperparameter comparison
-# ============================================================================
-
-fixed_labels  = ["α=1, s=1", "α=1, s=10"]
-fixed_colors  = [:steelblue, :darkorange]
-fixed_samples = [samples_fixed1, samples_fixed2]
-
-function postprocess_fixed(samples, label, n_burnin)
-    idx    = (n_burnin + 1):size(samples.c, 1)
-    c_post = samples.c[idx, :]
-    r_post = samples.r[idx]
+"""Save K, α, s traces/densities, co-clustering heatmap, and logpost trace."""
+function save_standard_figures(c_post, α_post, s_post, logpost, prefix, label, color)
     k_post = calculate_n_clusters(c_post)
 
-    ess_k = effective_sample_size(Float64.(k_post))
-    ess_r = effective_sample_size(r_post)
+    p_kt = plot(title="K trace — $label", xlabel="Iteration", ylabel="K")
+    plot!(p_kt, k_post, color=color, alpha=0.7, linewidth=0.8, label="")
+    savefig(p_kt, "$(prefix)_k_trace.png")
 
-    println("\n--- $label (post burn-in = $(length(idx)) samples) ---")
-    println("  K:  mean=$(round(mean(k_post), digits=2))  median=$(median(k_post))  mode=$(argmax(countmap(k_post)))")
-    println("  r:  mean=$(round(mean(r_post), digits=3))  95%CI=[$(round(quantile(r_post,0.025),digits=3)), $(round(quantile(r_post,0.975),digits=3))]")
-    println("  ESS(K)=$(round(ess_k, digits=1))  ESS(r)=$(round(ess_r, digits=1))")
+    cm_k = countmap(k_post)
+    ks   = sort(collect(keys(cm_k)))
+    ps   = [cm_k[k] / length(k_post) for k in ks]
+    p_kd = plot(title="K distribution — $label", xlabel="K", ylabel="Probability")
+    plot!(p_kd, ks, ps, markershape=:circle, linewidth=2, color=color, label="")
+    savefig(p_kd, "$(prefix)_k_distribution.png")
+
+    p_αt = plot(title="α trace — $label", xlabel="Iteration", ylabel="α")
+    plot!(p_αt, α_post, color=color, alpha=0.7, linewidth=0.8, label="")
+    savefig(p_αt, "$(prefix)_alpha_trace.png")
+
+    p_αd = plot(title="α density — $label", xlabel="α", ylabel="Density")
+    density!(p_αd, α_post, color=color, linewidth=2, label="")
+    savefig(p_αd, "$(prefix)_alpha_density.png")
+
+    p_st = plot(title="s trace — $label", xlabel="Iteration", ylabel="s (decay scale)")
+    plot!(p_st, s_post, color=color, alpha=0.7, linewidth=0.8, label="")
+    savefig(p_st, "$(prefix)_s_trace.png")
+
+    p_sd = plot(title="s density — $label", xlabel="s (decay scale)", ylabel="Density")
+    density!(p_sd, s_post, color=color, linewidth=2, label="")
+    savefig(p_sd, "$(prefix)_s_density.png")
 
     sim = compute_similarity_matrix(c_post)
-    return (c=c_post, r=r_post, k=k_post, sim=sim, ess_k=ess_k, ess_r=ess_r, label=label)
-end
-
-res_fixed1 = postprocess_fixed(samples_fixed1, fixed_labels[1], n_burnin)
-res_fixed2 = postprocess_fixed(samples_fixed2, fixed_labels[2], n_burnin)
-fixed_results = [res_fixed1, res_fixed2]
-
-# K trace
-p_kt = plot(title="K trace — fixed hyperparams", xlabel="Iteration", ylabel="K")
-for (res, col, lbl) in zip(fixed_results, fixed_colors, fixed_labels)
-    plot!(p_kt, res.k, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_kt, "results/walkfree/fixed_hyperparams/figures/k_trace.png")
-
-# K distribution
-p_kd = plot(title="Posterior K distribution — fixed hyperparams", xlabel="K", ylabel="Probability")
-for (res, col, lbl) in zip(fixed_results, fixed_colors, fixed_labels)
-    cm = countmap(res.k)
-    ks = sort(collect(keys(cm)))
-    ps = [cm[k] / length(res.k) for k in ks]
-    plot!(p_kd, ks, ps, label=lbl, color=col, markershape=:circle, linewidth=2)
-end
-savefig(p_kd, "results/walkfree/fixed_hyperparams/figures/k_distribution.png")
-
-# r trace
-p_rt = plot(title="r trace — fixed hyperparams", xlabel="Iteration", ylabel="r")
-for (res, col, lbl) in zip(fixed_results, fixed_colors, fixed_labels)
-    plot!(p_rt, res.r, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_rt, "results/walkfree/fixed_hyperparams/figures/r_trace.png")
-
-# r density
-p_rd = plot(title="Posterior density of r — fixed hyperparams", xlabel="r", ylabel="Density")
-for (res, col, lbl) in zip(fixed_results, fixed_colors, fixed_labels)
-    density!(p_rd, res.r, label=lbl, color=col, linewidth=2)
-end
-savefig(p_rd, "results/walkfree/fixed_hyperparams/figures/r_density.png")
-
-# Log-posterior traces
-p_lp_fixed = plot(title="Log-posterior traces — fixed hyperparams", xlabel="Iteration", ylabel="Log-posterior")
-for (s, col, lbl) in zip(fixed_samples, fixed_colors, fixed_labels)
-    plot!(p_lp_fixed, s.logpost[(n_burnin+1):end], label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_lp_fixed, "results/walkfree/fixed_hyperparams/figures/logpost_trace.png")
-
-# Co-clustering heatmaps
-for (res, lbl) in zip(fixed_results, fixed_labels)
-    tag = replace(lbl, r"[^A-Za-z0-9]+" => "_")
-    p_sim = heatmap(res.sim, title="Co-clustering: $lbl", xlabel="Country", ylabel="Country",
+    p_sim = heatmap(sim, title="Co-clustering: $label", xlabel="Country", ylabel="Country",
                     color=:viridis, colorbar_title="Pr(same cluster)", aspect_ratio=:equal)
-    savefig(p_sim, "results/walkfree/fixed_hyperparams/figures/coclustering_$(tag).png")
+    savefig(p_sim, "$(prefix)_coclustering.png")
+
+    p_lp = plot(title="Log-posterior trace — $label", xlabel="Iteration", ylabel="Log-posterior")
+    plot!(p_lp, logpost, color=color, alpha=0.7, linewidth=0.8, label="")
+    savefig(p_lp, "$(prefix)_logpost_trace.png")
+
+    return k_post, sim
 end
 
-# Cluster membership from MAP
-for (res, lbl) in zip(fixed_results, fixed_labels)
-    println("\n=== MAP cluster membership: $lbl ===")
-    z_map  = point_estimate_clustering(res.c; method=:MAP)
+"""
+Run one r-value of the NB grid search. Called via pmap.
+Saves chain + figures; returns a metrics NamedTuple.
+"""
+function run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_nb)
+    r_tag = replace(@sprintf("%.1f", r_fixed), "." => "p")
+    r_dir = "results/walkfree/nb_grid/r$(r_tag)"
+    mkpath("$(r_dir)/figures")
+    mkpath("$(r_dir)/chains")
+
+    t_start = time()
+    samples_r, diag_r = mcmc(
+        NBPopulationRatesMarg(), y, P, D, ddcrp_params, priors_marg, ConjugateProposal();
+        opts        = opts_nb,
+        init_params = Dict{Symbol,Any}(:r => Float64(r_fixed))
+    )
+    t_elapsed = time() - t_start
+
+    chain_file = "$(r_dir)/chains/samples.jld2"
+    @save chain_file samples_r diag_r r_fixed
+
+    idx_r    = (n_burnin + 1):size(samples_r.c, 1)
+    c_post_r = samples_r.c[idx_r, :]
+    α_post_r = samples_r.α_ddcrp[idx_r]
+    s_post_r = samples_r.s_ddcrp[idx_r]
+    λ_post_r = samples_r.λ[idx_r, :]
+    k_post_r = calculate_n_clusters(c_post_r)
+
+    save_standard_figures(c_post_r, α_post_r, s_post_r,
+        samples_r.logpost[idx_r],
+        "$(r_dir)/figures/r$(r_tag)",
+        "NB r=$(r_fixed)", :steelblue)
+
+    eff_rates_r = λ_post_r .* Float64.(P)'
+    ypred_r     = ppc_from_rates(eff_rates_r, P)
+    ll_mat_r    = compute_ll_matrix(y, eff_rates_r)
+    waic_r      = compute_waic(y, eff_rates_r)
+    loo_r       = compute_psis_loo(ll_mat_r)
+    crps_r      = compute_crps(y, ypred_r)
+    mal_r       = compute_mal(y, ypred_r)
+
+    p_ppc_r = ppc_scatter_panel(ypred_r, y, :steelblue, "PP mean vs observed — r=$(r_fixed)")
+    savefig(p_ppc_r, "$(r_dir)/figures/ppc_scatter.png")
+
+    return (
+        r         = r_fixed,
+        mean_K    = mean(k_post_r),
+        median_K  = median(k_post_r),
+        mode_K    = argmax(countmap(k_post_r)),
+        mean_α    = mean(α_post_r),
+        mean_s    = mean(s_post_r),
+        ess_K     = effective_sample_size(Float64.(k_post_r)),
+        waic      = waic_r.waic,
+        lppd      = waic_r.lppd,
+        p_waic    = waic_r.p_waic,
+        elpd_loo  = loo_r.elpd_loo,
+        k_hat_bad = sum(loo_r.k_hat .> 0.7),
+        crps      = crps_r[2],
+        mal       = mal_r,
+        time_s    = t_elapsed,
+    )
+end
+
+end # @everywhere
+
+# Main-process-only helpers (not needed by grid workers)
+
+"""Sample ρ_k from Gamma posterior for each PoissonPopMarg iteration;
+return (n_iter × n_obs) effective-rate matrix P[i] * ρ_{k(i)}."""
+function poisson_rate_samples(c_post::Matrix{Int}, y_obs::Vector{Int},
+                               P_obs::Vector{Int}, priors_p)
+    n_iter, n_obs = size(c_post)
+    eff = zeros(Float64, n_iter, n_obs)
+    for s in 1:n_iter
+        for tbl in table_vector(c_post[s, :])
+            S_k = Float64(sum(y_obs[tbl]))
+            Pk  = Float64(sum(P_obs[tbl]))
+            ρ_k = rand(Gamma(S_k + priors_p.ρ_a, 1.0 / (Pk + priors_p.ρ_b)))
+            for i in tbl
+                eff[s, i] = Float64(P_obs[i]) * ρ_k
+            end
+        end
+    end
+    return eff
+end
+
+"""Print MAP cluster membership to stdout."""
+function print_map_clusters(c_post::Matrix{Int}, df_clean::DataFrame, label::String)
+    z_map  = point_estimate_clustering(c_post; method=:MAP)
     csizes = countmap(z_map)
+    println("\n=== MAP cluster membership: $label ===")
     for (cl, cnt) in sort(collect(csizes), by=x -> x[2])
         members = sort(String.(df_clean.Country[findall(==(cl), z_map)]))
         println("  Cluster $cl (n=$cnt): " * join(members, ", "))
     end
-    k_cm     = countmap(res.k)
-    k_sorted = sort(collect(k_cm), by=x -> -x[2])
-    println("  K posterior (top 10):")
-    for (k, cnt) in k_sorted[1:min(10, length(k_sorted))]
-        @printf "    K=%-4d  p=%.4f\n" k cnt/length(res.k)
-    end
+    return z_map, csizes
 end
 
-# PPC for fixed runs
-λ_post_fixed1 = samples_fixed1.λ[(n_burnin+1):end, :]
-λ_post_fixed2 = samples_fixed2.λ[(n_burnin+1):end, :]
+# ============================================================================
+# Section 4 – Poisson model (main process)
+# ============================================================================
 
-ypred_fixed1 = posterior_predictive_samples(λ_post_fixed1, P)
-ypred_fixed2 = posterior_predictive_samples(λ_post_fixed2, P)
-
-p_ppc_fixed_dens = plot(
-    title  = "Posterior predictive check — fixed hyperparams (log scale)",
-    xlabel = "log₁₀(people in modern slavery + 1)",
-    ylabel = "Density",
+println("\n[Section 4] PoissonPopulationRatesMarg – Gibbs (ConjugateProposal)")
+samples_poisson, diag_poisson = mcmc(
+    PoissonPopulationRatesMarg(),
+    y, P, D,
+    ddcrp_params,
+    priors_poisson,
+    ConjugateProposal();
+    opts = opts_poisson
 )
-for (ypred, col, lbl) in zip([ypred_fixed1, ypred_fixed2], fixed_colors, fixed_labels)
-    density!(p_ppc_fixed_dens, vec(log10.(Float64.(ypred) .+ 1));
-             label="PP — $lbl", color=col, linewidth=1.5, alpha=0.7)
+println("  Total time: $(round(diag_poisson.total_time, digits=1)) s")
+@save "results/walkfree/poisson/chains/samples_poisson.jld2" samples_poisson diag_poisson ddcrp_params priors_poisson
+println("  Chain saved.")
+
+idx_p    = (n_burnin + 1):size(samples_poisson.c, 1)
+c_post_p = samples_poisson.c[idx_p, :]
+α_post_p = samples_poisson.α_ddcrp[idx_p]
+s_post_p = samples_poisson.s_ddcrp[idx_p]
+
+println("\n--- PoissonPopulationRatesMarg (post burn-in = $(length(idx_p)) samples) ---")
+k_post_p = calculate_n_clusters(c_post_p)
+println("  K:  mean=$(round(mean(k_post_p), digits=2))  median=$(median(k_post_p))  mode=$(argmax(countmap(k_post_p)))")
+println("  α:  mean=$(round(mean(α_post_p), digits=3))  95%CI=[$(round(quantile(α_post_p,0.025),digits=3)), $(round(quantile(α_post_p,0.975),digits=3))]")
+println("  s:  mean=$(round(mean(s_post_p), digits=3))  95%CI=[$(round(quantile(s_post_p,0.025),digits=3)), $(round(quantile(s_post_p,0.975),digits=3))]")
+println("  ESS(K)=$(round(effective_sample_size(Float64.(k_post_p)), digits=1))  ESS(α)=$(round(effective_sample_size(α_post_p), digits=1))  ESS(s)=$(round(effective_sample_size(s_post_p), digits=1))")
+
+k_post_p, sim_p = save_standard_figures(
+    c_post_p, α_post_p, s_post_p,
+    samples_poisson.logpost[idx_p],
+    "results/walkfree/poisson/figures/poisson",
+    "Poisson", :forestgreen
+)
+
+z_map_p, csizes_p = print_map_clusters(c_post_p, df_clean, "PoissonPopulationRatesMarg")
+k_sorted_p = sort(collect(countmap(k_post_p)), by=x -> -x[2])
+println("  K posterior (top 10):")
+for (k, cnt) in k_sorted_p[1:min(10, length(k_sorted_p))]
+    @printf "    K=%-4d  p=%.4f\n" k cnt/length(k_post_p)
 end
-density!(p_ppc_fixed_dens, log10.(Float64.(y) .+ 1);
-         label="Observed", color=:black, linewidth=2, linestyle=:dash)
-savefig(p_ppc_fixed_dens, "results/walkfree/fixed_hyperparams/figures/ppc_density.png")
 
-p_ppc_f1 = ppc_scatter_panel(ypred_fixed1, y, fixed_colors[1], "PP mean vs observed — $(fixed_labels[1])")
-p_ppc_f2 = ppc_scatter_panel(ypred_fixed2, y, fixed_colors[2], "PP mean vs observed — $(fixed_labels[2])")
-p_ppc_fixed_scatter = plot(p_ppc_f1, p_ppc_f2, layout=(1, 2), size=(1000, 450))
-savefig(p_ppc_fixed_scatter, "results/walkfree/fixed_hyperparams/figures/ppc_mean_vs_observed.png")
+println("\n[Poisson] Computing predictive metrics...")
+eff_rates_p = poisson_rate_samples(c_post_p, y, P, priors_poisson)
+ypred_p     = ppc_from_rates(eff_rates_p, P)
+ll_mat_p    = compute_ll_matrix(y, eff_rates_p)
+waic_p      = compute_waic(y, eff_rates_p)
+loo_p       = compute_psis_loo(ll_mat_p)
+crps_p      = compute_crps(y, ypred_p)
+mal_p       = compute_mal(y, ypred_p)
+println("  WAIC=$(round(waic_p.waic, digits=2))  ELPD-LOO=$(round(loo_p.elpd_loo, digits=2))  CRPS=$(round(crps_p[2], digits=4))  MAL=$(round(mal_p, digits=4))")
+println("  k̂ > 0.7 for $(sum(loo_p.k_hat .> 0.7)) / $n observations")
 
-# Summary metrics CSV
-rows_fixed = DataFrame(
-    run      = fixed_labels,
-    mean_K   = [round(mean(r.k), digits=3) for r in fixed_results],
-    median_K = [median(r.k) for r in fixed_results],
-    mode_K   = [argmax(countmap(r.k)) for r in fixed_results],
-    mean_r   = [round(mean(r.r), digits=4) for r in fixed_results],
-    r_ci_lo  = [round(quantile(r.r, 0.025), digits=4) for r in fixed_results],
-    r_ci_hi  = [round(quantile(r.r, 0.975), digits=4) for r in fixed_results],
-    ess_K    = [round(r.ess_k, digits=1) for r in fixed_results],
-    ess_r    = [round(r.ess_r, digits=1) for r in fixed_results],
+p_ppc_p_dens = plot(title="Posterior predictive check — Poisson", xlabel="log₁₀(y+1)", ylabel="Density")
+density!(p_ppc_p_dens, vec(log10.(Float64.(ypred_p) .+ 1)); label="PP", color=:forestgreen, linewidth=1.5)
+density!(p_ppc_p_dens, log10.(Float64.(y) .+ 1); label="Observed", color=:black, linewidth=2, linestyle=:dash)
+savefig(p_ppc_p_dens, "results/walkfree/poisson/figures/ppc_density.png")
+
+p_ppc_p_scatter = ppc_scatter_panel(ypred_p, y, :forestgreen, "PP mean vs observed — Poisson")
+savefig(p_ppc_p_scatter, "results/walkfree/poisson/figures/ppc_scatter.png")
+
+let
+    rate_mean = [mean(eff_rates_p[:, i] ./ Float64(P[i]))           for i in 1:n]
+    rate_lo   = [quantile(eff_rates_p[:, i] ./ Float64(P[i]), 0.025) for i in 1:n]
+    rate_hi   = [quantile(eff_rates_p[:, i] ./ Float64(P[i]), 0.975) for i in 1:n]
+    yp        = Float64.(ypred_p)
+    df_p = DataFrame(
+        country    = String.(df_clean.Country),
+        population = P,
+        y_observed = y,
+        rate_mean  = round.(rate_mean, digits=6),
+        rate_ci_lo = round.(rate_lo,   digits=6),
+        rate_ci_hi = round.(rate_hi,   digits=6),
+        pp_mean    = round.([mean(yp[:, i]) for i in 1:n],            digits=1),
+        pp_median  = round.([median(yp[:, i]) for i in 1:n],          digits=1),
+        pp_ci_lo   = round.([quantile(yp[:, i], 0.025) for i in 1:n], digits=1),
+        pp_ci_hi   = round.([quantile(yp[:, i], 0.975) for i in 1:n], digits=1),
+        waic_i     = round.(waic_p.waic_i, digits=4),
+        elpd_loo_i = round.(loo_p.loo_i,   digits=4),
+        k_hat      = round.(loo_p.k_hat,   digits=4),
+        crps_i     = round.(crps_p[1],     digits=4),
+    )
+    sort!(df_p, :y_observed, rev=true)
+    CSV.write("results/walkfree/poisson/tables/country_summary_poisson.csv", df_p)
+    println("  Country summary saved.")
+end
+
+println("\nPoisson section complete.")
+
+# ============================================================================
+# Section 5 – NB grid search via pmap
+# ============================================================================
+
+println("\n[Section 5] NBPopulationRatesMarg — grid search over r via pmap")
+println("  r_grid = $r_grid  ($(length(r_grid)) values, $(nworkers()) workers)")
+
+grid_results = pmap(r_grid) do r_fixed
+    run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_nb)
+end
+
+# pmap preserves order, but sort by r to be safe
+sort!(grid_results, by = res -> res.r)
+
+for res in grid_results
+    @printf "  r=%-5.1f  K_mean=%-6.2f  WAIC=%-12.2f  ELPD-LOO=%-12.2f  CRPS=%.4f\n" res.r res.mean_K res.waic res.elpd_loo res.crps
+end
+
+# ============================================================================
+# Section 6 – Model comparison and r selection
+# ============================================================================
+
+println("\n[Section 6] Model comparison")
+
+df_grid = DataFrame(
+    model     = vcat(["NB r=$(res.r)" for res in grid_results], ["Poisson"]),
+    r_fixed   = vcat([res.r           for res in grid_results], [NaN]),
+    mean_K    = vcat([res.mean_K      for res in grid_results], [mean(k_post_p)]),
+    median_K  = vcat([res.median_K    for res in grid_results], [median(k_post_p)]),
+    mode_K    = vcat([res.mode_K      for res in grid_results], [argmax(countmap(k_post_p))]),
+    waic      = vcat([res.waic        for res in grid_results], [waic_p.waic]),
+    elpd_loo  = vcat([res.elpd_loo    for res in grid_results], [loo_p.elpd_loo]),
+    crps      = vcat([res.crps        for res in grid_results], [crps_p[2]]),
+    mal       = vcat([res.mal         for res in grid_results], [mal_p]),
+    k_hat_bad = vcat([res.k_hat_bad   for res in grid_results], [sum(loo_p.k_hat .> 0.7)]),
+    time_s    = vcat([res.time_s      for res in grid_results], [diag_poisson.total_time]),
 )
-CSV.write("results/walkfree/fixed_hyperparams/summary_metrics.csv", rows_fixed)
-println("Fixed hyperparams summary saved to results/walkfree/fixed_hyperparams/summary_metrics.csv")
+CSV.write("results/walkfree/model_comparison.csv", df_grid)
+println("  Saved to results/walkfree/model_comparison.csv")
 
-println("\nFixed hyperparams figures saved to results/walkfree/fixed_hyperparams/figures/")
+nb_rows   = filter(r -> r.model != "Poisson", df_grid)
+sorted_nb = sort(nb_rows, :waic)
+println("\n  NB grid — top 10 by WAIC (lower is better):")
+println("  " * rpad("r", 6) * rpad("WAIC", 12) * rpad("ELPD-LOO", 14) * rpad("CRPS", 10) * rpad("MAL", 10) * rpad("mean_K", 10) * "k̂>0.7")
+println("  " * "-"^68)
+for row in eachrow(sorted_nb[1:min(10, nrow(sorted_nb)), :])
+    @printf "  %-6.1f %-12.2f %-14.2f %-10.4f %-10.4f %-10.2f %d\n" row.r_fixed row.waic row.elpd_loo row.crps row.mal row.mean_K row.k_hat_bad
+end
+
+poisson_row = filter(r -> r.model == "Poisson", df_grid)[1, :]
+println("\n  Poisson: WAIC=$(round(poisson_row.waic, digits=2))  ELPD-LOO=$(round(poisson_row.elpd_loo, digits=2))  CRPS=$(round(poisson_row.crps, digits=4))  mean_K=$(round(poisson_row.mean_K, digits=2))")
+
+best_idx = argmin([res.waic for res in grid_results])
+best_r   = grid_results[best_idx].r
+println("\n  Best r (by WAIC) = $(best_r)")
+@printf "  Best WAIC = %.2f\n" grid_results[best_idx].waic
+@printf "  ΔWAIC (Poisson - best NB) = %.2f\n" (poisson_row.waic - grid_results[best_idx].waic)
+
+r_vals_plot = [res.r for res in grid_results]
+
+p_waic_r = plot(r_vals_plot, [res.waic    for res in grid_results];
+                markershape=:circle, linewidth=2, color=:steelblue,
+                title="WAIC vs r", xlabel="r (fixed)", ylabel="WAIC", legend=:topright)
+hline!(p_waic_r, [poisson_row.waic]; color=:forestgreen, linestyle=:dash, label="Poisson")
+savefig(p_waic_r, "results/walkfree/nb_grid/figures/waic_vs_r.png")
+
+p_loo_r = plot(r_vals_plot, [res.elpd_loo for res in grid_results];
+               markershape=:circle, linewidth=2, color=:steelblue,
+               title="ELPD-LOO vs r", xlabel="r (fixed)", ylabel="ELPD-LOO", legend=:topright)
+hline!(p_loo_r, [poisson_row.elpd_loo]; color=:forestgreen, linestyle=:dash, label="Poisson")
+savefig(p_loo_r, "results/walkfree/nb_grid/figures/elpd_loo_vs_r.png")
+
+p_crps_r = plot(r_vals_plot, [res.crps    for res in grid_results];
+                markershape=:circle, linewidth=2, color=:steelblue,
+                title="CRPS vs r", xlabel="r (fixed)", ylabel="CRPS", legend=:topright)
+hline!(p_crps_r, [poisson_row.crps]; color=:forestgreen, linestyle=:dash, label="Poisson")
+savefig(p_crps_r, "results/walkfree/nb_grid/figures/crps_vs_r.png")
+
+p_k_r = plot(r_vals_plot, [res.mean_K    for res in grid_results];
+             markershape=:circle, linewidth=2, color=:steelblue,
+             title="Mean K vs r", xlabel="r (fixed)", ylabel="Mean K", legend=:topright)
+hline!(p_k_r, [mean(k_post_p)]; color=:forestgreen, linestyle=:dash, label="Poisson")
+savefig(p_k_r, "results/walkfree/nb_grid/figures/mean_k_vs_r.png")
+
+p_metrics = plot(p_waic_r, p_loo_r, p_crps_r, p_k_r, layout=(2, 2), size=(1000, 700),
+                 plot_title="Model comparison metrics vs r")
+savefig(p_metrics, "results/walkfree/nb_grid/figures/metric_vs_r.png")
+
+println("\nMetric vs r figures saved to results/walkfree/nb_grid/figures/")
 
 # ============================================================================
-# 3. Run 1 – Marginalised Gibbs sampler (α + s inferred)
+# Section 7 – Best-r NB extended post-processing (main process)
 # ============================================================================
 
-println("\n[Run 1] NBPopulationRatesMarg – Gibbs (ConjugateProposal)")
-samples_marg, diag_marg = mcmc(
+println("\n[Section 7] Extended post-processing for best r = $(best_r)")
+
+opts_nb_verbose = MCMCOptions(
+    n_samples         = n_samples,
+    verbose           = true,
+    track_diagnostics = true,
+    infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:s_ddcrp => 0.3)
+)
+
+println("  Re-running best r=$(best_r) with verbose output...")
+samples_best, diag_best = mcmc(
     NBPopulationRatesMarg(),
     y, P, D,
     ddcrp_params,
     priors_marg,
     ConjugateProposal();
-    opts = opts
+    opts        = opts_nb_verbose,
+    init_params = Dict{Symbol,Any}(:r => Float64(best_r))
 )
-println("  Total time: $(round(diag_marg.total_time, digits=1)) s")
-@save "results/walkfree/chains/samples_marg.jld2" samples_marg diag_marg ddcrp_params priors_marg
-println("  Chain saved to results/walkfree/chains/samples_marg.jld2")
+println("  Total time: $(round(diag_best.total_time, digits=1)) s")
+@save "results/walkfree/nb_best/chains/samples_best.jld2" samples_best diag_best ddcrp_params priors_marg best_r
+println("  Chain saved.")
+
+idx_b    = (n_burnin + 1):size(samples_best.c, 1)
+c_post_b = samples_best.c[idx_b, :]
+α_post_b = samples_best.α_ddcrp[idx_b]
+s_post_b = samples_best.s_ddcrp[idx_b]
+λ_post_b = samples_best.λ[idx_b, :]
+
+println("\n--- NBPopulationRatesMarg best r=$(best_r) ($(length(idx_b)) post-burnin samples) ---")
+k_post_b = calculate_n_clusters(c_post_b)
+println("  K:  mean=$(round(mean(k_post_b), digits=2))  median=$(median(k_post_b))  mode=$(argmax(countmap(k_post_b)))")
+println("  α:  mean=$(round(mean(α_post_b), digits=3))  95%CI=[$(round(quantile(α_post_b,0.025),digits=3)), $(round(quantile(α_post_b,0.975),digits=3))]")
+println("  s:  mean=$(round(mean(s_post_b), digits=3))  95%CI=[$(round(quantile(s_post_b,0.025),digits=3)), $(round(quantile(s_post_b,0.975),digits=3))]")
+println("  ESS(K)=$(round(effective_sample_size(Float64.(k_post_b)), digits=1))  ESS(α)=$(round(effective_sample_size(α_post_b), digits=1))  ESS(s)=$(round(effective_sample_size(s_post_b), digits=1))")
+
+k_post_b, sim_b = save_standard_figures(
+    c_post_b, α_post_b, s_post_b,
+    samples_best.logpost[idx_b],
+    "results/walkfree/nb_best/figures/nb_best",
+    "NB best r=$(best_r)", :steelblue
+)
+
+z_map_b, csizes_b = print_map_clusters(c_post_b, df_clean, "NB best r=$(best_r)")
+k_sorted_b = sort(collect(countmap(k_post_b)), by=x -> -x[2])
+println("  K posterior (top 10):")
+for (k, cnt) in k_sorted_b[1:min(10, length(k_sorted_b))]
+    @printf "    K=%-4d  p=%.4f\n" k cnt/length(k_post_b)
+end
+
+eff_rates_b = λ_post_b .* Float64.(P)'
+ypred_b     = ppc_from_rates(eff_rates_b, P)
+ll_mat_b    = compute_ll_matrix(y, eff_rates_b)
+waic_b      = compute_waic(y, eff_rates_b)
+loo_b       = compute_psis_loo(ll_mat_b)
+crps_b      = compute_crps(y, ypred_b)
+mal_b       = compute_mal(y, ypred_b)
+println("  WAIC=$(round(waic_b.waic, digits=2))  ELPD-LOO=$(round(loo_b.elpd_loo, digits=2))  CRPS=$(round(crps_b[2], digits=4))  MAL=$(round(mal_b, digits=4))")
+println("  k̂ > 0.7: $(sum(loo_b.k_hat .> 0.7)) / $n obs")
+
+p_ppc_b_dens = plot(title="PPC — NB best r=$(best_r)", xlabel="log₁₀(y+1)", ylabel="Density")
+density!(p_ppc_b_dens, vec(log10.(Float64.(ypred_b) .+ 1)); label="PP", color=:steelblue, linewidth=1.5)
+density!(p_ppc_b_dens, log10.(Float64.(y) .+ 1); label="Observed", color=:black, linewidth=2, linestyle=:dash)
+savefig(p_ppc_b_dens, "results/walkfree/nb_best/figures/ppc_density.png")
+
+p_ppc_b_scatter = ppc_scatter_panel(ypred_b, y, :steelblue, "PP mean vs observed — NB r=$(best_r)")
+savefig(p_ppc_b_scatter, "results/walkfree/nb_best/figures/ppc_scatter.png")
+
+# Posterior link probability arrows
+link_prob_b = zeros(Float64, n, n)
+for s in axes(c_post_b, 1)
+    for i in 1:n
+        link_prob_b[i, c_post_b[s, i]] += 1.0
+    end
+end
+link_prob_b ./= size(c_post_b, 1)
+
+keep_b   = findall(i -> csizes_b[z_map_b[i]] > 1, 1:n)
+unique_b = sort(unique(z_map_b[keep_b]))
+K_ns_b   = length(unique_b)
+remap_b  = Dict(c => k for (k, c) in enumerate(unique_b))
+z_ns_b   = [remap_b[z_map_b[i]] for i in keep_b]
+cl_b(k)  = [j for (j, z) in enumerate(z_ns_b) if z == k]
+
+if K_ns_b > 0
+    link_thresh = 0.05
+    p_arrows_b = plot(
+        xlabel = "PC1 ($pct1% var explained)",
+        ylabel = "PC2 ($pct2% var explained)",
+        title  = "Posterior link probabilities — NB r=$(best_r), singletons excluded",
+        legend = :outerright, size = (900, 550)
+    )
+    for i in keep_b, j in keep_b
+        i == j && continue
+        p_ij = link_prob_b[i, j]
+        p_ij < link_thresh && continue
+        plot!(p_arrows_b, [pc1[i], pc1[j]], [pc2[i], pc2[j]];
+              label="", color=:gray, alpha=min(p_ij * 2, 0.8),
+              linewidth=0.5 + 2.5 * p_ij, arrow=true)
+    end
+    for k in 1:K_ns_b
+        ji = cl_b(k)
+        scatter!(p_arrows_b, pc1[keep_b[ji]], pc2[keep_b[ji]];
+                 label="Cluster $k", markersize=5, markerstrokewidth=0.4)
+    end
+    savefig(p_arrows_b, "results/walkfree/nb_best/figures/cluster_link_arrows.png")
+
+    p_pc2_b = plot(xlabel="PC1 ($pct1% var explained)", ylabel="PC2 ($pct2% var explained)",
+                   title="PCA — MAP clusters (NB r=$(best_r))",
+                   legend=:outerright, size=(900, 500))
+    for k in 1:K_ns_b
+        ji = cl_b(k)
+        scatter!(p_pc2_b, pc1[keep_b[ji]], pc2[keep_b[ji]];
+                 label="Cluster $k", markersize=5, markerstrokewidth=0.4)
+    end
+    savefig(p_pc2_b, "results/walkfree/nb_best/figures/cluster_pca.png")
+
+    p_pc1_b = plot(xlabel="PC1 ($pct1% var explained)", ylabel="People in modern slavery",
+                   title="PC1 vs Count — MAP clusters (NB r=$(best_r))",
+                   legend=:outerright, yscale=:log10, ylims=(y_lo, y_hi), size=(900, 500))
+    for k in 1:K_ns_b
+        ji = cl_b(k)
+        scatter!(p_pc1_b, pc1[keep_b[ji]], Float64.(y[keep_b[ji]]);
+                 label="Cluster $k", markersize=5, markerstrokewidth=0.4)
+    end
+    savefig(p_pc1_b, "results/walkfree/nb_best/figures/cluster_pc1_vs_count.png")
+end
+
+# Country-level table
+let
+    rate_mean = [mean(λ_post_b[:, i])            for i in 1:n]
+    rate_lo   = [quantile(λ_post_b[:, i], 0.025) for i in 1:n]
+    rate_hi   = [quantile(λ_post_b[:, i], 0.975) for i in 1:n]
+    yp        = Float64.(ypred_b)
+    df_b = DataFrame(
+        country    = String.(df_clean.Country),
+        population = P,
+        y_observed = y,
+        rate_mean  = round.(rate_mean,  digits=6),
+        rate_ci_lo = round.(rate_lo,    digits=6),
+        rate_ci_hi = round.(rate_hi,    digits=6),
+        pp_mean    = round.([mean(yp[:, i]) for i in 1:n],            digits=1),
+        pp_median  = round.([median(yp[:, i]) for i in 1:n],          digits=1),
+        pp_ci_lo   = round.([quantile(yp[:, i], 0.025) for i in 1:n], digits=1),
+        pp_ci_hi   = round.([quantile(yp[:, i], 0.975) for i in 1:n], digits=1),
+        waic_i     = round.(waic_b.waic_i, digits=4),
+        elpd_loo_i = round.(loo_b.loo_i,   digits=4),
+        k_hat      = round.(loo_b.k_hat,   digits=4),
+        crps_i     = round.(crps_b[1],     digits=4),
+    )
+    sort!(df_b, :y_observed, rev=true)
+    CSV.write("results/walkfree/nb_best/tables/country_summary_nb_best.csv", df_b)
+    println("  Country table saved.")
+end
+
+# Comparison: Poisson vs NB best
+p_cmp_dens = plot(title="PPC — Poisson vs NB r=$(best_r)", xlabel="log₁₀(y+1)", ylabel="Density")
+density!(p_cmp_dens, vec(log10.(Float64.(ypred_p) .+ 1)); label="Poisson PP", color=:forestgreen, linewidth=1.5, alpha=0.7)
+density!(p_cmp_dens, vec(log10.(Float64.(ypred_b) .+ 1)); label="NB r=$(best_r) PP", color=:steelblue, linewidth=1.5, alpha=0.7)
+density!(p_cmp_dens, log10.(Float64.(y) .+ 1); label="Observed", color=:black, linewidth=2, linestyle=:dash)
+savefig(p_cmp_dens, "results/walkfree/figures/ppc_comparison.png")
+
+p_cmp_k = plot(title="K distribution — Poisson vs NB r=$(best_r)", xlabel="K", ylabel="Probability")
+let cm = countmap(k_post_p); ks = sort(collect(keys(cm)))
+    plot!(p_cmp_k, ks, [cm[k]/length(k_post_p) for k in ks]; label="Poisson", color=:forestgreen, markershape=:circle, linewidth=2)
+end
+let cm = countmap(k_post_b); ks = sort(collect(keys(cm)))
+    plot!(p_cmp_k, ks, [cm[k]/length(k_post_b) for k in ks]; label="NB r=$(best_r)", color=:steelblue, markershape=:circle, linewidth=2)
+end
+savefig(p_cmp_k, "results/walkfree/figures/k_distribution_comparison.png")
+
+println("\nBest-r NB section complete.")
 
 # ============================================================================
-# 4. Run 2 – Non-marginalised RJMCMC, PriorProposal + NoUpdate (α + s inferred)
+# Section 8 – RJMCMC confirmation at best r (main process)
 # ============================================================================
 
-println("\n[Run 2] NBPopulationRates – RJMCMC + PriorProposal + NoUpdate")
+println("\n[Section 8] RJMCMC confirmation with best r=$(best_r)")
+
+opts_rj = MCMCOptions(
+    n_samples         = n_samples,
+    verbose           = true,
+    track_diagnostics = true,
+    infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:s_ddcrp => 0.3)
+)
+
 samples_rj, diag_rj = mcmc(
     NBPopulationRates(),
     y, P, D,
@@ -361,494 +776,75 @@ samples_rj, diag_rj = mcmc(
     priors_unmarg,
     PriorProposal();
     fixed_dim_proposal = NoUpdate(),
-    opts = opts
+    opts               = opts_rj,
+    init_params        = Dict{Symbol,Any}(:r => Float64(best_r))
 )
 ar_rj = acceptance_rates(diag_rj)
-println("  Acceptance rates — birth: $(round(ar_rj.birth, digits=3)),  death: $(round(ar_rj.death, digits=3)),  fixed: $(round(ar_rj.fixed, digits=3))")
+println("  Acceptance rates — birth: $(round(ar_rj.birth, digits=3))  death: $(round(ar_rj.death, digits=3))  fixed: $(round(ar_rj.fixed, digits=3))")
 println("  Total time: $(round(diag_rj.total_time, digits=1)) s")
-@save "results/walkfree/chains/samples_rj.jld2" samples_rj diag_rj ddcrp_params priors_unmarg
-println("  Chain saved to results/walkfree/chains/samples_rj.jld2")
+@save "results/walkfree/rjmcmc/chains/samples_rjmcmc.jld2" samples_rj diag_rj ddcrp_params priors_unmarg best_r
+println("  Chain saved.")
 
-# ============================================================================
-# 5. Post-processing
-# ============================================================================
+idx_rj    = (n_burnin + 1):size(samples_rj.c, 1)
+c_post_rj = samples_rj.c[idx_rj, :]
+α_post_rj = samples_rj.α_ddcrp[idx_rj]
+s_post_rj = samples_rj.s_ddcrp[idx_rj]
+k_post_rj = calculate_n_clusters(c_post_rj)
 
-function postprocess(samples, label, n_burnin)
-    idx    = (n_burnin + 1):size(samples.c, 1)
-    c_post = samples.c[idx, :]
-    r_post = samples.r[idx]
-    k_post = calculate_n_clusters(c_post)
-    α_post = samples.α_ddcrp[idx]
-    s_post = samples.s_ddcrp[idx]
+println("\n--- RJMCMC best r=$(best_r) ($(length(idx_rj)) post-burnin samples) ---")
+println("  K:  mean=$(round(mean(k_post_rj), digits=2))  median=$(median(k_post_rj))  mode=$(argmax(countmap(k_post_rj)))")
+println("  α:  mean=$(round(mean(α_post_rj), digits=3))  95%CI=[$(round(quantile(α_post_rj,0.025),digits=3)), $(round(quantile(α_post_rj,0.975),digits=3))]")
+println("  s:  mean=$(round(mean(s_post_rj), digits=3))  95%CI=[$(round(quantile(s_post_rj,0.025),digits=3)), $(round(quantile(s_post_rj,0.975),digits=3))]")
+println("  ESS(K)=$(round(effective_sample_size(Float64.(k_post_rj)), digits=1))")
 
-    ess_k = effective_sample_size(Float64.(k_post))
-    ess_r = effective_sample_size(r_post)
-    ess_α = effective_sample_size(α_post)
-    ess_s = effective_sample_size(s_post)
-
-    println("\n--- $label (post burn-in = $(length(idx)) samples) ---")
-    println("  K:  mean=$(round(mean(k_post), digits=2))  median=$(median(k_post))  mode=$(argmax(countmap(k_post)))")
-    println("  r:  mean=$(round(mean(r_post), digits=3))  95%CI=[$(round(quantile(r_post,0.025),digits=3)), $(round(quantile(r_post,0.975),digits=3))]")
-    println("  α:  mean=$(round(mean(α_post), digits=3))  95%CI=[$(round(quantile(α_post,0.025),digits=3)), $(round(quantile(α_post,0.975),digits=3))]")
-    println("  s:  mean=$(round(mean(s_post), digits=3))  95%CI=[$(round(quantile(s_post,0.025),digits=3)), $(round(quantile(s_post,0.975),digits=3))]")
-    println("  ESS(K)=$(round(ess_k, digits=1))  ESS(r)=$(round(ess_r, digits=1))  ESS(α)=$(round(ess_α, digits=1))  ESS(s)=$(round(ess_s, digits=1))")
-
-    sim = compute_similarity_matrix(c_post)
-
-    return (c=c_post, r=r_post, k=k_post, α=α_post, s=s_post, sim=sim,
-            ess_k=ess_k, ess_r=ess_r, ess_α=ess_α, ess_s=ess_s, label=label)
-end
-
-res_marg = postprocess(samples_marg, "Marg-Gibbs", n_burnin)
-res_rj   = postprocess(samples_rj,   "RJMCMC",     n_burnin)
-
-results = [res_marg, res_rj]
-
-# ============================================================================
-# 5b. Extended diagnostics — cluster membership, co-clustering, posterior params
-# ============================================================================
-
-for (res, lbl) in zip(results, labels)
-    println("\n=== Extended diagnostics: $lbl ===")
-
-    # Cluster membership from MAP
-    z_map = point_estimate_clustering(res.c; method=:MAP)
-    csizes = countmap(z_map)
-    println("  MAP cluster composition:")
-    for (cl, cnt) in sort(collect(csizes), by=x -> x[2])
-        members = sort(String.(df_clean.Country[findall(==(cl), z_map)]))
-        println("    Cluster $cl (n=$cnt): " * join(members, ", "))
-    end
-
-    # K posterior distribution (top 10 most probable values)
-    k_cm = countmap(res.k)
-    k_sorted = sort(collect(k_cm), by=x -> -x[2])
-    println("  K posterior (top 10):")
-    for (k, cnt) in k_sorted[1:min(10, length(k_sorted))]
-        @printf "    K=%-4d  p=%.4f\n" k cnt/length(res.k)
-    end
-
-    # Co-clustering within the biggest MAP cluster
-    big_cl = argmax(csizes)
-    big_idx = findall(==(big_cl), z_map)
-    if length(big_idx) > 1
-        sub_sim = res.sim[big_idx, big_idx]
-        off = [sub_sim[i,j] for i in 1:length(big_idx), j in 1:length(big_idx) if i != j]
-        println("  Co-clustering within big cluster (n=$(length(big_idx))): mean=$(round(mean(off),digits=3))  min=$(round(minimum(off),digits=3))  median=$(round(median(off),digits=3))")
-    end
-
-    # Effective decay range at posterior mean s
-    s_mean = mean(res.s)
-    half_life = log(2) / s_mean
-    println("  At posterior mean s=$(round(s_mean,digits=3)): decay half-life d=$(round(half_life,digits=3))  (D max=$(round(maximum(D),digits=2)))")
-end
-
-# ============================================================================
-# 6. K distribution comparison
-# ============================================================================
-
-all_k = sort(unique(vcat(res_marg.k, res_rj.k)))
-println("\n=== K distribution comparison ===")
-@printf "%-5s  %-14s  %-14s\n" "K" "Marg-Gibbs" "RJMCMC"
-println("-" ^ 40)
-for k in all_k
-    p1 = round(mean(res_marg.k .== k), digits=4)
-    p2 = round(mean(res_rj.k  .== k), digits=4)
-    @printf "%-5d  %-14.4f  %-14.4f\n" k p1 p2
-end
-
-# ============================================================================
-# 7. Plots
-# ============================================================================
-
-# 7a. K distribution
-p_k = plot(title="Posterior K distribution (Walk Free)", xlabel="K", ylabel="Probability")
-for (res, col, lbl) in zip(results, colors, labels)
-    cm  = countmap(res.k)
-    ks  = sort(collect(keys(cm)))
-    ps  = [cm[k] / length(res.k) for k in ks]
-    plot!(p_k, ks, ps, label=lbl, color=col, markershape=:circle, linewidth=2)
-end
-savefig(p_k, "results/walkfree/figures/k_distribution.png")
-
-# 7b. α trace / density
-p_α_trace = plot(title="α traces (post burn-in)", xlabel="Iteration", ylabel="α")
-for (res, col, lbl) in zip(results, colors, labels)
-    plot!(p_α_trace, res.α, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_α_trace, "results/walkfree/figures/alpha_trace.png")
-
-p_α_dens = plot(title="Posterior density of α", xlabel="α", ylabel="Density")
-for (res, col, lbl) in zip(results, colors, labels)
-    density!(p_α_dens, res.α, label=lbl, color=col, linewidth=2)
-end
-savefig(p_α_dens, "results/walkfree/figures/alpha_density.png")
-
-# 7c. s trace / density
-p_s_trace = plot(title="s traces (post burn-in)", xlabel="Iteration", ylabel="s (decay scale)")
-for (res, col, lbl) in zip(results, colors, labels)
-    plot!(p_s_trace, res.s, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_s_trace, "results/walkfree/figures/scale_trace.png")
-
-p_s_dens = plot(title="Posterior density of scale s", xlabel="s (decay scale)", ylabel="Density")
-for (res, col, lbl) in zip(results, colors, labels)
-    density!(p_s_dens, res.s, label=lbl, color=col, linewidth=2)
-end
-savefig(p_s_dens, "results/walkfree/figures/scale_density.png")
-
-# 7d. r trace / density
-p_r_trace = plot(title="r traces (post burn-in)", xlabel="Iteration", ylabel="r")
-for (res, col, lbl) in zip(results, colors, labels)
-    plot!(p_r_trace, res.r, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_r_trace, "results/walkfree/figures/r_trace.png")
-
-p_r_dens = plot(title="Posterior density of r", xlabel="r", ylabel="Density")
-for (res, col, lbl) in zip(results, colors, labels)
-    density!(p_r_dens, res.r, label=lbl, color=col, linewidth=2)
-end
-savefig(p_r_dens, "results/walkfree/figures/r_density.png")
-
-# 7e. K trace
-p_k_trace = plot(title="Number of clusters K (post burn-in)", xlabel="Iteration", ylabel="K")
-for (res, col, lbl) in zip(results, colors, labels)
-    plot!(p_k_trace, res.k, label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_k_trace, "results/walkfree/figures/k_trace.png")
-
-# 7f. Co-clustering heatmaps
-for (res, lbl) in zip(results, labels)
-    p_sim = heatmap(res.sim, title="Co-clustering: $lbl", xlabel="Country", ylabel="Country",
-                    color=:viridis, colorbar_title="Pr(same cluster)", aspect_ratio=:equal)
-    savefig(p_sim, "results/walkfree/figures/coclustering_$(replace(lbl, r"[^A-Za-z0-9]+" => "_")).png")
-end
-
-# 7g. Logpost traces
-p_lp = plot(title="Log-posterior traces", xlabel="Iteration", ylabel="Log-posterior")
-for (s, col, lbl) in zip([samples_marg, samples_rj], colors, labels)
-    plot!(p_lp, s.logpost[(n_burnin+1):end], label=lbl, color=col, alpha=0.7, linewidth=0.8)
-end
-savefig(p_lp, "results/walkfree/figures/logpost_trace.png")
-
-# 7h. 4-panel DDCRP parameter posteriors (α and s)
-p_α_mg = plot(title="α — Marg-Gibbs", xlabel="α", ylabel="Density")
-density!(p_α_mg, res_marg.α; label="", color=colors[1], linewidth=2)
-
-p_α_rj = plot(title="α — RJMCMC", xlabel="α", ylabel="Density")
-density!(p_α_rj, res_rj.α; label="", color=colors[2], linewidth=2)
-
-p_s_mg = plot(title="s — Marg-Gibbs", xlabel="s (decay scale)", ylabel="Density")
-density!(p_s_mg, res_marg.s; label="", color=colors[1], linewidth=2)
-
-p_s_rj = plot(title="s — RJMCMC", xlabel="s (decay scale)", ylabel="Density")
-density!(p_s_rj, res_rj.s; label="", color=colors[2], linewidth=2)
-
-p_ddcrp_panel = plot(p_α_mg, p_α_rj, p_s_mg, p_s_rj, layout=(2, 2), size=(900, 600))
-savefig(p_ddcrp_panel, "results/walkfree/figures/ddcrp_params_posteriors.png")
-
-println("\nAll figures saved to results/walkfree/figures/")
-
-# ============================================================================
-# 8. Summary metrics CSV
-# ============================================================================
-
-ar_list   = [nothing, ar_rj]
-time_list = [diag_marg.total_time, diag_rj.total_time]
-
-rows = DataFrame(
-    run            = ["marg_gibbs", "rjmcmc_no_update"],
-    mean_K         = [round(mean(r.k), digits=3) for r in results],
-    median_K       = [median(r.k) for r in results],
-    mode_K         = [argmax(countmap(r.k)) for r in results],
-    mean_r         = [round(mean(r.r), digits=4) for r in results],
-    r_ci_lo        = [round(quantile(r.r, 0.025), digits=4) for r in results],
-    r_ci_hi        = [round(quantile(r.r, 0.975), digits=4) for r in results],
-    mean_α         = [round(mean(r.α), digits=4) for r in results],
-    α_ci_lo        = [round(quantile(r.α, 0.025), digits=4) for r in results],
-    α_ci_hi        = [round(quantile(r.α, 0.975), digits=4) for r in results],
-    mean_s         = [round(mean(r.s), digits=4) for r in results],
-    s_ci_lo        = [round(quantile(r.s, 0.025), digits=4) for r in results],
-    s_ci_hi        = [round(quantile(r.s, 0.975), digits=4) for r in results],
-    ess_K          = [round(r.ess_k, digits=1) for r in results],
-    ess_r          = [round(r.ess_r, digits=1) for r in results],
-    ess_α          = [round(r.ess_α, digits=1) for r in results],
-    ess_s          = [round(r.ess_s, digits=1) for r in results],
-    total_time_s   = [round(t, digits=1) for t in time_list],
-    birth_acc_rate = [isnothing(ar) ? NaN : round(ar.birth, digits=4) for ar in ar_list],
-    death_acc_rate = [isnothing(ar) ? NaN : round(ar.death, digits=4) for ar in ar_list],
-    fixed_acc_rate = [isnothing(ar) ? NaN : round(ar.fixed, digits=4) for ar in ar_list],
+k_post_rj, sim_rj = save_standard_figures(
+    c_post_rj, α_post_rj, s_post_rj,
+    samples_rj.logpost[idx_rj],
+    "results/walkfree/rjmcmc/figures/rjmcmc",
+    "RJMCMC r=$(best_r)", :darkorange
 )
 
-CSV.write("results/walkfree/summary_metrics.csv", rows)
-println("Summary metrics saved to results/walkfree/summary_metrics.csv")
-
-# ============================================================================
-# 9. Cluster visualisation (PCA-based, singletons removed)
-# ============================================================================
-
-# PCA via SVD (X_std is n × p, already zero-mean)
-F_svd    = svd(X_std)
-pc1      = F_svd.U[:, 1] .* F_svd.S[1]
-pc2      = F_svd.U[:, 2] .* F_svd.S[2]
-var_expl = 100 .* F_svd.S .^ 2 ./ sum(F_svd.S .^ 2)
-pct1     = round(var_expl[1], digits=1)
-pct2     = round(var_expl[2], digits=1)
-
-# Posterior directed link probabilities P(c[i] = j) — from Marg-Gibbs
-link_prob = zeros(Float64, n, n)
-for s in axes(res_marg.c, 1)
-    for i in 1:n
-        j = res_marg.c[s, i]
-        link_prob[i, j] += 1.0
-    end
+p_k_overlay = plot(title="K distribution — Marg-Gibbs vs RJMCMC (r=$(best_r))",
+                   xlabel="K", ylabel="Probability")
+let cm = countmap(k_post_b); ks = sort(collect(keys(cm)))
+    plot!(p_k_overlay, ks, [cm[k]/length(k_post_b) for k in ks];
+          label="Marg-Gibbs", color=:steelblue, markershape=:circle, linewidth=2)
 end
-link_prob ./= size(res_marg.c, 1)
-
-# MAP clusters from Marg-Gibbs (for link arrow plot)
-z_map_mg  = point_estimate_clustering(res_marg.c; method=:MAP)
-csizes_mg = countmap(z_map_mg)
-keep_mg   = findall(i -> csizes_mg[z_map_mg[i]] > 1, 1:n)
-unique_mg = sort(unique(z_map_mg[keep_mg]))
-K_ns_mg   = length(unique_mg)
-remap_mg  = Dict(c => k for (k, c) in enumerate(unique_mg))
-z_ns_mg   = [remap_mg[z_map_mg[i]] for i in keep_mg]
-cl_mg(k)  = [j for (j, z) in enumerate(z_ns_mg) if z == k]
-
-link_thresh = 0.05
-p_arrows = plot(
-    xlabel = "PC1 ($pct1% var explained)",
-    ylabel = "PC2 ($pct2% var explained)",
-    title  = "Posterior link probabilities P(cᵢ=j) — Marg-Gibbs, singletons excluded",
-    legend = :outerright,
-    size   = (900, 550)
-)
-for i in keep_mg, j in keep_mg
-    i == j && continue
-    p_ij = link_prob[i, j]
-    p_ij < link_thresh && continue
-    plot!(p_arrows,
-        [pc1[i], pc1[j]], [pc2[i], pc2[j]];
-        label     = "",
-        color     = :gray,
-        alpha     = min(p_ij * 2, 0.8),
-        linewidth = 0.5 + 2.5 * p_ij,
-        arrow     = true
-    )
+let cm = countmap(k_post_rj); ks = sort(collect(keys(cm)))
+    plot!(p_k_overlay, ks, [cm[k]/length(k_post_rj) for k in ks];
+          label="RJMCMC", color=:darkorange, markershape=:square, linewidth=2)
 end
-for k in 1:K_ns_mg
-    ji = cl_mg(k)
-    scatter!(p_arrows,
-        pc1[keep_mg[ji]], pc2[keep_mg[ji]];
-        label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
-    )
-end
-savefig(p_arrows, "results/walkfree/figures/cluster_link_arrows.png")
+savefig(p_k_overlay, "results/walkfree/figures/k_distribution_marg_vs_rjmcmc.png")
 
-# PC plots and cluster membership — looped over both models
-# Precompute global log10 y-axis bounds to avoid "No strict ticks found" warnings
-y_lo = 10.0 ^ floor(log10(minimum(y)))
-y_hi = 10.0 ^ ceil(log10(maximum(y)))
+p_α_ov = plot(title="α density — Marg-Gibbs vs RJMCMC (r=$(best_r))", xlabel="α", ylabel="Density")
+density!(p_α_ov, α_post_b;  label="Marg-Gibbs", color=:steelblue, linewidth=2)
+density!(p_α_ov, α_post_rj; label="RJMCMC",    color=:darkorange, linewidth=2)
+savefig(p_α_ov, "results/walkfree/figures/alpha_density_marg_vs_rjmcmc.png")
 
-for (res, tag, lbl) in zip(results, ["marg", "rj"], labels)
-    z_map    = point_estimate_clustering(res.c; method=:MAP)
-    csizes   = countmap(z_map)
-    keep_idx = findall(i -> csizes[z_map[i]] > 1, 1:n)
-    n_keep   = length(keep_idx)
-    K_ns     = length(unique(z_map[keep_idx]))
+p_s_ov = plot(title="s density — Marg-Gibbs vs RJMCMC (r=$(best_r))",
+              xlabel="s (decay scale)", ylabel="Density")
+density!(p_s_ov, s_post_b;  label="Marg-Gibbs", color=:steelblue, linewidth=2)
+density!(p_s_ov, s_post_rj; label="RJMCMC",    color=:darkorange, linewidth=2)
+savefig(p_s_ov, "results/walkfree/figures/s_density_marg_vs_rjmcmc.png")
 
-    println("\n  $lbl: $(n - n_keep) singletons removed, $n_keep countries, $K_ns non-trivial clusters")
-
-    if K_ns == 0
-        println("  (no non-trivial clusters — skipping PC plots)")
-        continue
-    end
-
-    unique_cl = sort(unique(z_map[keep_idx]))
-    remap     = Dict(c => k for (k, c) in enumerate(unique_cl))
-    z_ns      = [remap[z_map[i]] for i in keep_idx]
-    cl_fn(k)  = [j for (j, z) in enumerate(z_ns) if z == k]
-
-    # Cluster membership
-    println("  Cluster composition ($lbl):")
-    for k in 1:K_ns
-        members = sort(String.(df_clean.Country[keep_idx[cl_fn(k)]]))
-        println("    Cluster $k (n=$(length(members))): $(join(members, ", "))")
-    end
-
-    # PC1 vs count (log scale) — explicit ylims suppresses "No strict ticks found"
-    p1 = plot(
-        xlabel = "PC1 ($pct1% var explained)",
-        ylabel = "People in modern slavery",
-        title  = "PC1 vs Count — MAP clusters ($lbl)",
-        legend = :outerright,
-        yscale = :log10,
-        ylims  = (y_lo, y_hi),
-        size   = (900, 500)
-    )
-    for k in 1:K_ns
-        ji = cl_fn(k)
-        scatter!(p1,
-            pc1[keep_idx[ji]], Float64.(y[keep_idx[ji]]);
-            label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
-        )
-    end
-    savefig(p1, "results/walkfree/figures/cluster_pc1_vs_count_$(tag).png")
-
-    # PC1 vs PC2
-    p2 = plot(
-        xlabel = "PC1 ($pct1% var explained)",
-        ylabel = "PC2 ($pct2% var explained)",
-        title  = "PCA — MAP clusters ($lbl)",
-        legend = :outerright,
-        size   = (900, 500)
-    )
-    for k in 1:K_ns
-        ji = cl_fn(k)
-        scatter!(p2,
-            pc1[keep_idx[ji]], pc2[keep_idx[ji]];
-            label = "Cluster $k", markersize = 5, markerstrokewidth = 0.4
-        )
-    end
-    savefig(p2, "results/walkfree/figures/cluster_pca_$(tag).png")
-end
-
-println("\nCluster visualisation saved to results/walkfree/figures/")
+println("\nRJMCMC vs Marg-Gibbs comparison figures saved to results/walkfree/figures/")
 
 # ============================================================================
-# 10. Posterior predictive distribution
+# Summary
 # ============================================================================
 
-
-println("\n[Section 10] Computing posterior predictive distributions...")
-
-λ_post_marg = samples_marg.λ[(n_burnin+1):end, :]
-λ_post_rj   = samples_rj.λ[(n_burnin+1):end, :]
-
-ypred_marg = posterior_predictive_samples(λ_post_marg, P)
-ypred_rj   = posterior_predictive_samples(λ_post_rj,   P)
-
-# 10a. Density of log10(y_pred+1) vs log10(y_obs+1)  [pooled across all countries & iters]
-p_ppc_dens = plot(
-    title  = "Posterior predictive check — marginal density (log scale)",
-    xlabel = "log₁₀(people in modern slavery + 1)",
-    ylabel = "Density",
-)
-for (ypred, col, lbl) in zip([ypred_marg, ypred_rj], colors, labels)
-    density!(p_ppc_dens, vec(log10.(Float64.(ypred) .+ 1));
-             label="PP — $lbl", color=col, linewidth=1.5, alpha=0.7)
-end
-density!(p_ppc_dens, log10.(Float64.(y) .+ 1);
-         label="Observed", color=:black, linewidth=2, linestyle=:dash)
-savefig(p_ppc_dens, "results/walkfree/figures/ppc_density.png")
-
-# 10b. PP mean vs observed scatter with 95% CI (both models, side-by-side panels)
-p_ppc_marg   = ppc_scatter_panel(ypred_marg, y, colors[1], "PP mean vs observed — Marg-Gibbs")
-p_ppc_rj     = ppc_scatter_panel(ypred_rj,   y, colors[2], "PP mean vs observed — RJMCMC")
-p_ppc_scatter = plot(p_ppc_marg, p_ppc_rj, layout=(1, 2), size=(1000, 450))
-savefig(p_ppc_scatter, "results/walkfree/figures/ppc_mean_vs_observed.png")
-
-println("  PPC figures saved to results/walkfree/figures/")
-
-# ============================================================================
-# 11. Country-level summary table
-# ============================================================================
-
-println("\n[Section 11] Writing country-level summary table...")
-mkpath("results/walkfree/tables")
-
-function country_table(ypred, λ_post, label_str, df_clean, y, P)
-    n_obs = length(y)
-    countries = String.(df_clean.Country)
-
-    rate_mean  = [mean(λ_post[:, i])              for i in 1:n_obs]
-    rate_ci_lo = [quantile(λ_post[:, i], 0.025)   for i in 1:n_obs]
-    rate_ci_hi = [quantile(λ_post[:, i], 0.975)   for i in 1:n_obs]
-
-    yp = Float64.(ypred)
-    pp_mean    = [mean(yp[:, i])                  for i in 1:n_obs]
-    pp_median  = [median(yp[:, i])                for i in 1:n_obs]
-    pp_ci_lo   = [quantile(yp[:, i], 0.025)       for i in 1:n_obs]
-    pp_ci_hi   = [quantile(yp[:, i], 0.975)       for i in 1:n_obs]
-
-    df_out = DataFrame(
-        country    = countries,
-        population = P,
-        y_observed = y,
-        rate_mean  = round.(rate_mean,  digits=6),
-        rate_ci_lo = round.(rate_ci_lo, digits=6),
-        rate_ci_hi = round.(rate_ci_hi, digits=6),
-        pp_mean    = round.(pp_mean,    digits=1),
-        pp_median  = round.(pp_median,  digits=1),
-        pp_ci_lo   = round.(pp_ci_lo,   digits=1),
-        pp_ci_hi   = round.(pp_ci_hi,   digits=1),
-    )
-    sort!(df_out, :y_observed, rev=true)
-    fname = "results/walkfree/tables/country_summary_$(label_str).csv"
-    CSV.write(fname, df_out)
-    println("  Saved: $fname")
-    return df_out
-end
-
-tbl_marg = country_table(ypred_marg, λ_post_marg, "marg_gibbs", df_clean, y, P)
-tbl_rj   = country_table(ypred_rj,   λ_post_rj,   "rjmcmc",     df_clean, y, P)
-
-# ============================================================================
-# 12. Per-country posterior predictive density plots (4×3 grids)
-# ============================================================================
-
-println("\n[Section 12] Plotting per-country posterior predictive distributions...")
-
-countries_all = String.(df_clean.Country)
-n_per_page    = 12   # 4 rows × 3 columns
-n_pages       = ceil(Int, n / n_per_page)
-
-for page in 1:n_pages
-    idx_start = (page - 1) * n_per_page + 1
-    idx_end   = min(page * n_per_page, n)
-    idx_page  = idx_start:idx_end
-
-    panels = Any[]
-    for i in idx_page
-        yobs    = Float64(y[i])
-        yp_marg = Float64.(ypred_marg[:, i])
-        yp_rj   = Float64.(ypred_rj[:, i])
-
-        p = plot(title=countries_all[i], titlefontsize=6,
-                 xlabel="", ylabel="", legend=false, framestyle=:box,
-                 tickfontsize=5)
-        density!(p, yp_marg; color=colors[1], linewidth=1.2, alpha=0.8)
-        density!(p, yp_rj;   color=colors[2], linewidth=1.2, alpha=0.8)
-        vline!(p, [yobs]; color=:black, linewidth=1.5, linestyle=:dash)
-        push!(panels, p)
-    end
-
-    # Pad incomplete last page with blank panels
-    while length(panels) < n_per_page
-        push!(panels, plot(axis=false, grid=false, framestyle=:none))
-    end
-
-    p_grid = plot(panels..., layout=(4, 3), size=(1000, 1100),
-                  plot_title=@sprintf("PP by country (page %d/%d) — Marg-Gibbs (blue), RJMCMC (orange), observed (dashed)", page, n_pages),
-                  plot_titlefontsize=8)
-    fname = @sprintf("results/walkfree/figures/ppc_countries_%03d.png", page)
-    savefig(p_grid, fname)
-    println("  Saved: $fname  (countries $(idx_start)-$(idx_end) of $n)")
-end
-
-println("  Per-country PPC plots complete.")
-
-println("\nDone.")
-
-
-
-
-
-
-
-# plot alpha and the prior
-density(res_marg.α; label="Posterior α (Marg-Gibbs)", color=:blue, linewidth=2)
-x = collect(0.01:0.01:10.0)
-y = pdf(Gamma(1.0, 1/0.01), x)
-density!(x, y; label="Gamma(1, 0.01)", color=:red, linewidth=2)
-density(x, y; label="Gamma(1, 0.01)", color=:red, linewidth=2)
+println("\n" * "="^60)
+println("Analysis complete.")
+println("  Best r (WAIC): $(best_r)")
+@printf "  ΔWAIC (Poisson - NB best): %.2f\n" (poisson_row.waic - grid_results[best_idx].waic)
+@printf "  Poisson mean K: %.2f,  NB best mean K: %.2f\n" mean(k_post_p) mean(k_post_b)
+println("  Marg-Gibbs K (r=$(best_r)):  mean=$(round(mean(k_post_b), digits=2))")
+println("  RJMCMC K (r=$(best_r)):       mean=$(round(mean(k_post_rj), digits=2))")
+println("  k̂ > 0.7 obs: Poisson=$(sum(loo_p.k_hat .> 0.7))  NB best=$(sum(loo_b.k_hat .> 0.7))")
+println("="^60)
+println("\nKey output files:")
+println("  results/walkfree/model_comparison.csv")
+println("  results/walkfree/nb_grid/figures/metric_vs_r.png")
+println("  results/walkfree/figures/k_distribution_comparison.png")
+println("  results/walkfree/figures/k_distribution_marg_vs_rjmcmc.png")
+println("  results/walkfree/nb_best/tables/country_summary_nb_best.csv")

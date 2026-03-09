@@ -22,7 +22,7 @@
 #
 # Parameters: c (assignments), λ (individual rates), r (global dispersion)
 # Marginalised: γ_k (cluster rates integrated out analytically)
-# Requires: exposure/population data P_i via CountDataWithTrials
+# Requires: exposure/population data P_i via CountDataWithPopulation
 # ============================================================================
 
 using Distributions, SpecialFunctions, Random
@@ -43,7 +43,7 @@ Model: y_i | λ_i ~ Poisson(P_i · λ_i), λ_i | γ_k, r ~ Gamma(r, r/γ_k),
 Individual rates λ_i are maintained explicitly and updated via MH.
 Customer assignments are updated via Gibbs (ConjugateProposal required).
 
-Requires exposure data P_i via CountDataWithTrials.
+Requires exposure data P_i via CountDataWithPopulation.
 """
 struct NBPopulationRatesMarg <: NegativeBinomialModel end
 
@@ -113,7 +113,7 @@ struct NBPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     s_ddcrp::Vector{T}
 end
 
-requires_trials(::NBPopulationRatesMarg) = true
+requires_population(::NBPopulationRatesMarg) = true
 
 # ============================================================================
 # Table Contribution
@@ -133,11 +133,11 @@ function table_contribution(
     ::NBPopulationRatesMarg,
     table::AbstractVector{Int},
     state::NBPopulationRatesMargState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors
 )
     y   = observations(data)
-    P   = trials(data)
+    P   = population(data)
     r   = state.r
     n_k = length(table)
 
@@ -167,7 +167,7 @@ Compute full log-posterior for the marginalised NB population rates model.
 """
 function posterior(
     model::NBPopulationRatesMarg,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     state::NBPopulationRatesMargState,
     priors::NBPopulationRatesMargPriors,
     log_DDCRP::AbstractMatrix
@@ -191,13 +191,13 @@ random walk. The acceptance ratio uses the O(1) delta in table contribution.
 function update_λ!(
     ::NBPopulationRatesMarg,
     state::NBPopulationRatesMargState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.3
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     r = state.r
 
     for table in tables
@@ -238,7 +238,7 @@ Update global dispersion r using Metropolis-Hastings with a normal random walk.
 function update_r!(
     model::NBPopulationRatesMarg,
     state::NBPopulationRatesMargState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors,
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.5
@@ -267,7 +267,7 @@ Assignment updates are handled by update_c!.
 function update_params!(
     model::NBPopulationRatesMarg,
     state::NBPopulationRatesMargState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors,
     tables::Vector{Vector{Int}},
     ::AbstractMatrix,
@@ -293,12 +293,12 @@ initialised from smoothed empirical rates; r initialised to 1.0.
 """
 function initialise_state(
     ::NBPopulationRatesMarg,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     ddcrp_params::DDCRPParams,
     priors::NBPopulationRatesMargPriors
 )
     y   = observations(data)
-    P   = trials(data)
+    P   = population(data)
     D   = distance_matrix(data)
     n   = length(y)
 

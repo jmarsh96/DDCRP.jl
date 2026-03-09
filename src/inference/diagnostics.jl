@@ -398,3 +398,66 @@ function Base.show(io::IO, s::MCMCSummary)
     println(io, "  Total time: $(round(s.total_time, digits=1))s")
     println(io, "  ESS/s (K):  $(round(s.ess_per_sec_n_clusters, digits=2))")
 end
+
+# ============================================================================
+# PSIS-LOO
+# ============================================================================
+
+"""
+    compute_psis_loo(ll_matrix::AbstractMatrix{Float64})
+
+Pareto-Smoothed Importance Sampling Leave-One-Out cross-validation (PSIS-LOO).
+Uses the Zhang & Stephens (2009) GPD tail-fitting approximation.
+
+# Arguments
+- `ll_matrix`: `(n_samples × n_obs)` matrix where `ll_matrix[s, i] = log p(y_i | θ^(s))`
+
+# Returns
+`NamedTuple` with fields:
+- `elpd_loo`: Total expected log pointwise predictive density (sum over obs)
+- `loo_i`: Per-observation ELPD-LOO contributions (length n)
+- `k_hat`: Per-observation Pareto shape estimates (k̂ > 0.7 indicates instability)
+"""
+function compute_psis_loo(ll_matrix::AbstractMatrix{Float64})
+    S, n = size(ll_matrix)
+    loo_i = zeros(n)
+    k_hat = zeros(n)
+
+    for i in 1:n
+        ll_i    = ll_matrix[:, i]
+        log_r   = -ll_i                       # log importance ratios
+        log_r_c = log_r .- maximum(log_r)     # centred for numerical stability
+
+        M = min(floor(Int, S ÷ 5), ceil(Int, 3 * sqrt(S)))
+        M = max(M, 5)  # need at least a few tail samples
+        sorted_idx = sortperm(log_r_c, rev=true)
+        r_tail = exp.(log_r_c[sorted_idx[1:M]])
+
+        # Fit GPD via method of moments (Zhang & Stephens 2009)
+        m_tail = mean(r_tail)
+        v_tail = var(r_tail)
+        k = v_tail < 1e-15 ? 0.0 : (1.0 - m_tail^2 / v_tail) / 2.0
+        σ = max(m_tail * (1.0 - k), 1e-10)
+        k_hat[i] = k
+
+        log_r_smooth = copy(log_r_c)
+        if k < 0.7
+            for m_idx in 1:M
+                p_m = (m_idx - 0.5) / M
+                q_m = k ≈ 0.0 ? σ * (-log(1 - p_m)) :
+                                 σ / k * ((1 - p_m)^(-k) - 1.0)
+                log_r_smooth[sorted_idx[m_idx]] = min(log(max(q_m, 0.0) + 1e-300), 0.0)
+            end
+        end
+        log_r_full = log_r_smooth .+ maximum(log_r)
+
+        # elpd_loo_i = log Σ_s [r̃^(s) * p(y_i|θ^(s))] - log Σ_s r̃^(s)
+        num   = _logsumexp(ll_i .+ log_r_full)
+        denom = _logsumexp(log_r_full)
+        loo_i[i] = num - denom
+    end
+    return (elpd_loo=sum(loo_i), loo_i=loo_i, k_hat=k_hat)
+end
+
+# Internal log-sum-exp
+_logsumexp(x) = (m = maximum(x); m + log(sum(exp.(x .- m))))

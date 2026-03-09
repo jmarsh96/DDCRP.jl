@@ -80,13 +80,19 @@ function mcmc(
     proposal::BirthProposal = PriorProposal();
     fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
     opts::MCMCOptions = MCMCOptions(),
-    init_c::Union{Nothing, Vector{Int}} = nothing
+    init_params::Union{Nothing, Dict{Symbol,Any}} = nothing
 )
     # Validate data matches model requirements
     if requires_trials(model) && !has_trials(data)
         throw(ArgumentError(
             "Model $(typeof(model)) requires data with trials (N). " *
             "Use CountDataWithTrials(y, N, D) instead of CountData(y, D)."
+        ))
+    end
+    if requires_population(model) && !has_population(data)
+        throw(ArgumentError(
+            "Model $(typeof(model)) requires population data (P). " *
+            "Use CountDataWithPopulation(y, P, D) instead of CountData(y, D)."
         ))
     end
 
@@ -103,8 +109,10 @@ function mcmc(
 
     # Initialize state (dispatches on model type)
     state = initialise_state(model, data, ddcrp_params, priors)
-    if !isnothing(init_c)
-        state.c = copy(init_c)
+    if !isnothing(init_params)
+        for (k, v) in init_params
+            setfield!(state, k, v isa AbstractArray ? copy(v) : v)
+        end
     end
 
     # Allocate sample storage (dispatches on model type)
@@ -202,16 +210,20 @@ function mcmc(model::LikelihoodModel, y::AbstractVector, D::AbstractMatrix,
                 fixed_dim_proposal=fixed_dim_proposal, opts=opts)
 end
 
-"""Convenience: CountDataWithTrials models (Binomial, PoissonPopulationRates) with separate y, N, D."""
-function mcmc(model::LikelihoodModel, y::AbstractVector, N::Union{Int, AbstractVector{Int}},
+"""Convenience: CountDataWithTrials models (Binomial) or CountDataWithPopulation models with separate y, N/P, D."""
+function mcmc(model::LikelihoodModel, y::AbstractVector, N::Union{<:Real, <:AbstractVector{<:Real}},
               D::AbstractMatrix, ddcrp_params::DDCRPParams, priors::AbstractPriors,
               proposal::BirthProposal = PriorProposal();
               fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
               opts::MCMCOptions = MCMCOptions(),
-              init_c::Union{Nothing, Vector{Int}} = nothing)
-    data = CountDataWithTrials(y, N, D)
+              init_params::Union{Nothing, Dict{Symbol,Any}} = nothing)
+    if requires_population(model)
+        data = CountDataWithPopulation(y, N, D)
+    else
+        data = CountDataWithTrials(y, N, D)
+    end
     return mcmc(model, data, ddcrp_params, priors, proposal;
-                fixed_dim_proposal=fixed_dim_proposal, opts=opts, init_c=init_c)
+                fixed_dim_proposal=fixed_dim_proposal, opts=opts, init_params=init_params)
 end
 
 """Convenience: ContinuousData models (SkewNormal, Gamma, Weibull) with separate y, D."""

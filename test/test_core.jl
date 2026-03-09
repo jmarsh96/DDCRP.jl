@@ -142,6 +142,7 @@
         @test PoissonClusterRates <: PoissonModel
         @test PoissonClusterRatesMarg <: PoissonModel
         @test PoissonPopulationRates <: PoissonModel
+        @test PoissonPopulationRatesMarg <: PoissonModel
         @test PoissonModel <: LikelihoodModel
 
         @test BinomialClusterProb <: BinomialModel

@@ -93,7 +93,7 @@ struct PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
 end
 
 
-requires_trials(::PoissonPopulationRates) = true  # Requires exposure P
+requires_population(::PoissonPopulationRates) = true
 
 # ============================================================================
 # Table Contribution
@@ -105,17 +105,17 @@ requires_trials(::PoissonPopulationRates) = true  # Requires exposure P
 Compute log-contribution of a table with population-adjusted Poisson likelihood.
 
 # Arguments
-- `data`: CountDataWithTrials containing y (counts) and N (exposures/populations as P)
+- `data`: CountDataWithPopulation containing y (counts) and N (exposures/populations as P)
 """
 function table_contribution(
     ::PoissonPopulationRates,
     table::AbstractVector{Int},
     state::PoissonPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::PoissonPopulationRatesPriors
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     ρ = state.ρ_dict[sort(table)]
 
     # Poisson log-likelihood: y_i * log(P_i * ρ) - P_i * ρ - log(y_i!)
@@ -143,7 +143,7 @@ Compute full log-posterior for population-adjusted Poisson model.
 """
 function posterior(
     model::PoissonPopulationRates,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     state::PoissonPopulationRatesState,
     priors::PoissonPopulationRatesPriors,
     log_DDCRP::AbstractMatrix
@@ -166,12 +166,12 @@ Posterior: Gamma(ρ_a + S_k, ρ_b + sum_P_k)
 function update_cluster_rates!(
     ::PoissonPopulationRates,
     state::PoissonPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::PoissonPopulationRatesPriors,
     tables::Vector{Vector{Int}}
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     for table in tables
         key = sort(table)
         S_k = sum(view(y, table))
@@ -193,7 +193,7 @@ Update all model parameters.
 function update_params!(
     model::PoissonPopulationRates,
     state::PoissonPopulationRatesState,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     priors::PoissonPopulationRatesPriors,
     tables::Vector{Vector{Int}},
     log_DDCRP::AbstractMatrix,
@@ -213,12 +213,12 @@ Create initial MCMC state for the model.
 """
 function initialise_state(
     ::PoissonPopulationRates,
-    data::CountDataWithTrials,
+    data::CountDataWithPopulation,
     ddcrp_params::DDCRPParams,
     priors::PoissonPopulationRatesPriors
 )
     y = observations(data)
-    P = trials(data)
+    P = population(data)
     D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
     tables = table_vector(c)

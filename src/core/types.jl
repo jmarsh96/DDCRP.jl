@@ -321,6 +321,22 @@ struct CountDataWithTrials{Ty<:AbstractVector, Tn<:Union{Int, <:AbstractVector{I
 end
 
 """
+    CountDataWithPopulation{Ty, Tp, Td} <: AbstractObservedData
+
+Observed count data with population/exposure offsets for Poisson/NB population models.
+
+# Fields
+- `y::Ty`: Observed counts (AbstractVector)
+- `P::Tp`: Population or exposure (scalar or AbstractVector{<:Real})
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct CountDataWithPopulation{Ty<:AbstractVector, Tp<:Union{<:Real,<:AbstractVector{<:Real}}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    P::Tp
+    D::Td
+end
+
+"""
     ContinuousData{Ty, Td} <: AbstractObservedData
 
 Observed continuous data for models like Skew Normal.
@@ -348,8 +364,15 @@ distance_matrix(data::AbstractObservedData) = data.D
 trials(data::CountDataWithTrials) = data.N
 
 """Check if data has trials information."""
-has_trials(::CountData) = false
+has_trials(::AbstractObservedData) = false
 has_trials(::CountDataWithTrials) = true
+
+"""Return the population/exposure vector (only for CountDataWithPopulation)."""
+population(data::CountDataWithPopulation) = data.P
+
+"""Check if data has population/exposure information."""
+has_population(::AbstractObservedData) = false
+has_population(::CountDataWithPopulation) = true
 
 """Number of observations."""
 nobs(data::AbstractObservedData) = length(data.y)
@@ -365,7 +388,13 @@ Returns true if the model requires data with trials/exposure (N or P).
 """
 requires_trials(::LikelihoodModel) = false
 requires_trials(::BinomialModel) = true
-# Note: PoissonPopulationRates also requires trials (exposure P) - defined in model file
+
+"""
+    requires_population(model::LikelihoodModel) -> Bool
+
+Returns true if the model requires data with population/exposure offsets (P).
+"""
+requires_population(::LikelihoodModel) = false
 
 # ============================================================================
 # Legacy Strategy Types - REMOVED
