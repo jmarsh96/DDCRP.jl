@@ -5,7 +5,7 @@
 # Structure:
 #   1. Poisson model — establishes baseline (tends to over-estimate K)
 #   2. NB grid search over r ∈ {0.5, 1.0, ..., 20.0} with r fixed (parallel)
-#   3. Model comparison: WAIC, CRPS, ELPD-LOO, mean K
+#   3. Model comparison: ELPD-LOO
 #   4. Best-r NB post-processing (extended diagnostics)
 #   5. RJMCMC confirmation at best r
 #
@@ -54,7 +54,7 @@ println("Running with $(nworkers()) worker(s)")
     using SpecialFunctions
 end
 
-Random.seed!(2025)
+Random.seed!(123)
 
 # ============================================================================
 # Section 0 – Output directories
@@ -152,8 +152,8 @@ if TEST_RUN
     n_burnin  = 100
     r_grid    = [1.0, 5.0, 10.0]   # minimal grid for smoke test
 else
-    n_samples = 30_000
-    n_burnin  = 5_000
+    n_samples = 125_000
+    n_burnin  = 25_000
     r_grid    = vcat(0.5:0.5:20.0) # 40 values
 end
 
@@ -208,33 +208,6 @@ function compute_ll_matrix(y_obs::Vector{Int}, eff_rates::Matrix{Float64})
     return ll
 end
 
-"""CRPS via the sorted-sample estimator. Returns (per-obs CRPS vector, mean CRPS)."""
-function compute_crps(y_obs::Vector{Int}, y_pred::Matrix{Int})
-    n_iter, n_obs = size(y_pred)
-    crps_i = zeros(n_obs)
-    for i in 1:n_obs
-        yi = Float64(y_obs[i])
-        yp = sort(Float64.(y_pred[:, i]))
-        e_ay = mean(abs.(yp .- yi))
-        s = 0.0
-        for k in 1:n_iter
-            s += (2k - n_iter - 1) * yp[k]
-        end
-        e_aa = s / (n_iter * (n_iter - 1))
-        crps_i[i] = e_ay - e_aa
-    end
-    return (crps_i, mean(crps_i))
-end
-
-"""Mean absolute loss: mean over obs of |pp_mean_i - y_obs_i|."""
-function compute_mal(y_obs::Vector{Int}, y_pred::Matrix{Int})
-    n_obs = length(y_obs)
-    mal = 0.0
-    for i in 1:n_obs
-        mal += abs(mean(Float64.(y_pred[:, i])) - Float64(y_obs[i]))
-    end
-    return mal / n_obs
-end
 
 """PPC scatter panel: PP mean vs observed, with 95% CI bars, on log-log scale."""
 function ppc_scatter_panel(ypred::Matrix{Int}, y_obs::Vector{Int}, col, title_str)
@@ -335,15 +308,9 @@ function run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_
     z_map_r = point_estimate_clustering(c_post_r; method=:MAP)
 
     eff_rates_r = λ_post_r .* Float64.(P)'
-    ypred_r     = ppc_from_rates(eff_rates_r, P)
     ll_mat_r    = compute_ll_matrix(y, eff_rates_r)
     waic_r      = compute_waic(y, eff_rates_r)
     loo_r       = compute_psis_loo(ll_mat_r)
-    crps_r      = compute_crps(y, ypred_r)
-    mal_r       = compute_mal(y, ypred_r)
-
-    p_ppc_r = ppc_scatter_panel(ypred_r, y, :steelblue, "PP mean vs observed — r=$(r_fixed)")
-    savefig(p_ppc_r, "$(r_dir)/figures/ppc_scatter.png")
 
     return (
         r         = r_fixed,
@@ -358,8 +325,6 @@ function run_grid_r(r_fixed, y, P, D, n_burnin, ddcrp_params, priors_marg, opts_
         p_waic    = waic_r.p_waic,
         elpd_loo  = loo_r.elpd_loo,
         k_hat_bad = sum(loo_r.k_hat .> 0.7),
-        crps      = crps_r[2],
-        mal       = mal_r,
         time_s    = t_elapsed,
         z_map     = z_map_r,
     )
@@ -449,9 +414,7 @@ ypred_p     = ppc_from_rates(eff_rates_p, P)
 ll_mat_p    = compute_ll_matrix(y, eff_rates_p)
 waic_p      = compute_waic(y, eff_rates_p)
 loo_p       = compute_psis_loo(ll_mat_p)
-crps_p      = compute_crps(y, ypred_p)
-mal_p       = compute_mal(y, ypred_p)
-println("  WAIC=$(round(waic_p.waic, digits=2))  ELPD-LOO=$(round(loo_p.elpd_loo, digits=2))  CRPS=$(round(crps_p[2], digits=4))  MAL=$(round(mal_p, digits=4))")
+println("  WAIC=$(round(waic_p.waic, digits=2))  ELPD-LOO=$(round(loo_p.elpd_loo, digits=2))")
 println("  k̂ > 0.7 for $(sum(loo_p.k_hat .> 0.7)) / $n observations")
 
 p_ppc_p_dens = plot(title="Posterior predictive check — Poisson", xlabel="log₁₀(y+1)", ylabel="Density")
@@ -481,7 +444,6 @@ let
         waic_i     = round.(waic_p.waic_i, digits=4),
         elpd_loo_i = round.(loo_p.loo_i,   digits=4),
         k_hat      = round.(loo_p.k_hat,   digits=4),
-        crps_i     = round.(crps_p[1],     digits=4),
     )
     sort!(df_p, :y_observed, rev=true)
     CSV.write("results/walkfree/poisson/tables/country_summary_poisson.csv", df_p)
@@ -505,7 +467,7 @@ end
 sort!(grid_results, by = res -> res.r)
 
 for res in grid_results
-    @printf "  r=%-5.1f  K_mean=%-6.2f  WAIC=%-12.2f  ELPD-LOO=%-12.2f  CRPS=%.4f\n" res.r res.mean_K res.waic res.elpd_loo res.crps
+    @printf "  r=%-5.1f  K_mean=%-6.2f  WAIC=%-12.2f  ELPD-LOO=%-12.2f\n" res.r res.mean_K res.waic res.elpd_loo
 end
 
 println("\n[Section 5] MAP cluster membership for each r value:")
@@ -532,8 +494,6 @@ df_grid = DataFrame(
     mode_K    = vcat([res.mode_K      for res in grid_results], [argmax(countmap(k_post_p))]),
     waic      = vcat([res.waic        for res in grid_results], [waic_p.waic]),
     elpd_loo  = vcat([res.elpd_loo    for res in grid_results], [loo_p.elpd_loo]),
-    crps      = vcat([res.crps        for res in grid_results], [crps_p[2]]),
-    mal       = vcat([res.mal         for res in grid_results], [mal_p]),
     k_hat_bad = vcat([res.k_hat_bad   for res in grid_results], [sum(loo_p.k_hat .> 0.7)]),
     time_s    = vcat([res.time_s      for res in grid_results], [diag_poisson.total_time]),
 )
@@ -543,14 +503,14 @@ println("  Saved to results/walkfree/model_comparison.csv")
 nb_rows   = filter(r -> r.model != "Poisson", df_grid)
 sorted_nb = sort(nb_rows, :waic)
 println("\n  NB grid — top 10 by WAIC (lower is better):")
-println("  " * rpad("r", 6) * rpad("WAIC", 12) * rpad("ELPD-LOO", 14) * rpad("CRPS", 10) * rpad("MAL", 10) * rpad("mean_K", 10) * "k̂>0.7")
-println("  " * "-"^68)
+println("  " * rpad("r", 6) * rpad("WAIC", 12) * rpad("ELPD-LOO", 14) * rpad("mean_K", 10) * "k̂>0.7")
+println("  " * "-"^48)
 for row in eachrow(sorted_nb[1:min(10, nrow(sorted_nb)), :])
-    @printf "  %-6.1f %-12.2f %-14.2f %-10.4f %-10.4f %-10.2f %d\n" row.r_fixed row.waic row.elpd_loo row.crps row.mal row.mean_K row.k_hat_bad
+    @printf "  %-6.1f %-12.2f %-14.2f %-10.2f %d\n" row.r_fixed row.waic row.elpd_loo row.mean_K row.k_hat_bad
 end
 
 poisson_row = filter(r -> r.model == "Poisson", df_grid)[1, :]
-println("\n  Poisson: WAIC=$(round(poisson_row.waic, digits=2))  ELPD-LOO=$(round(poisson_row.elpd_loo, digits=2))  CRPS=$(round(poisson_row.crps, digits=4))  mean_K=$(round(poisson_row.mean_K, digits=2))")
+println("\n  Poisson: WAIC=$(round(poisson_row.waic, digits=2))  ELPD-LOO=$(round(poisson_row.elpd_loo, digits=2))  mean_K=$(round(poisson_row.mean_K, digits=2))")
 
 best_idx = argmax([res.elpd_loo for res in grid_results])
 best_r   = grid_results[best_idx].r
@@ -572,19 +532,13 @@ p_loo_r = plot(r_vals_plot, [res.elpd_loo for res in grid_results];
 hline!(p_loo_r, [poisson_row.elpd_loo]; color=:forestgreen, linestyle=:dash, label="Poisson")
 savefig(p_loo_r, "results/walkfree/nb_grid/figures/elpd_loo_vs_r.png")
 
-p_crps_r = plot(r_vals_plot, [res.crps    for res in grid_results];
-                markershape=:circle, linewidth=2, color=:steelblue,
-                title="CRPS vs r", xlabel="r (fixed)", ylabel="CRPS", legend=:topright)
-hline!(p_crps_r, [poisson_row.crps]; color=:forestgreen, linestyle=:dash, label="Poisson")
-savefig(p_crps_r, "results/walkfree/nb_grid/figures/crps_vs_r.png")
-
 p_k_r = plot(r_vals_plot, [res.mean_K    for res in grid_results];
              markershape=:circle, linewidth=2, color=:steelblue,
              title="Mean K vs r", xlabel="r (fixed)", ylabel="Mean K", legend=:topright)
 hline!(p_k_r, [mean(k_post_p)]; color=:forestgreen, linestyle=:dash, label="Poisson")
 savefig(p_k_r, "results/walkfree/nb_grid/figures/mean_k_vs_r.png")
 
-p_metrics = plot(p_waic_r, p_loo_r, p_crps_r, p_k_r, layout=(2, 2), size=(1000, 700),
+p_metrics = plot(p_waic_r, p_loo_r, p_k_r, layout=(1, 3), size=(1200, 400),
                  plot_title="Model comparison metrics vs r")
 savefig(p_metrics, "results/walkfree/nb_grid/figures/metric_vs_r.png")
 
@@ -650,9 +604,7 @@ ypred_b     = ppc_from_rates(eff_rates_b, P)
 ll_mat_b    = compute_ll_matrix(y, eff_rates_b)
 waic_b      = compute_waic(y, eff_rates_b)
 loo_b       = compute_psis_loo(ll_mat_b)
-crps_b      = compute_crps(y, ypred_b)
-mal_b       = compute_mal(y, ypred_b)
-println("  WAIC=$(round(waic_b.waic, digits=2))  ELPD-LOO=$(round(loo_b.elpd_loo, digits=2))  CRPS=$(round(crps_b[2], digits=4))  MAL=$(round(mal_b, digits=4))")
+println("  WAIC=$(round(waic_b.waic, digits=2))  ELPD-LOO=$(round(loo_b.elpd_loo, digits=2))")
 println("  k̂ > 0.7: $(sum(loo_b.k_hat .> 0.7)) / $n obs")
 
 p_ppc_b_dens = plot(title="PPC — NB best r=$(best_r)", xlabel="log₁₀(y+1)", ylabel="Density")
@@ -743,7 +695,6 @@ let
         waic_i     = round.(waic_b.waic_i, digits=4),
         elpd_loo_i = round.(loo_b.loo_i,   digits=4),
         k_hat      = round.(loo_b.k_hat,   digits=4),
-        crps_i     = round.(crps_b[1],     digits=4),
     )
     sort!(df_b, :y_observed, rev=true)
     CSV.write("results/walkfree/nb_best/tables/country_summary_nb_best.csv", df_b)
@@ -843,85 +794,16 @@ savefig(p_s_ov, "results/walkfree/figures/s_density_marg_vs_rjmcmc.png")
 println("\nRJMCMC vs Marg-Gibbs comparison figures saved to results/walkfree/figures/")
 
 # ============================================================================
-# Section 9 – Best-per-metric RJMCMC (parallel via pmap)
+# Section 9 – RJMCMC best ELPD-LOO
 # ============================================================================
 
-println("\n[Section 9] Best-per-metric RJMCMC confirmation")
+println("\n[Section 9] RJMCMC best ELPD-LOO")
 
-@everywhere function run_best_rjmcmc(r_fixed, metric_label, y, P, D, n_burnin,
-                                     ddcrp_params, priors_unmarg, opts_rj)
-    r_tag   = replace(@sprintf("%.1f", r_fixed), "." => "p")
-    out_dir = "results/walkfree/best_models/$(metric_label)_r$(r_tag)"
-    mkpath("$(out_dir)/figures")
-    mkpath("$(out_dir)/chains")
-
-    t_start = time()
-    samples_rj, diag_rj = mcmc(
-        NBPopulationRates(),
-        y, P, D,
-        ddcrp_params, priors_unmarg,
-        PriorProposal();
-        fixed_dim_proposal = NoUpdate(),
-        opts               = opts_rj,
-        init_params        = Dict{Symbol,Any}(:r => Float64(r_fixed))
-    )
-    t_elapsed = time() - t_start
-
-    @save "$(out_dir)/chains/samples_rjmcmc.jld2" samples_rj diag_rj r_fixed metric_label
-
-    idx_rj    = (n_burnin + 1):size(samples_rj.c, 1)
-    c_post_rj = samples_rj.c[idx_rj, :]
-    α_post_rj = samples_rj.α_ddcrp[idx_rj]
-    s_post_rj = samples_rj.s_ddcrp[idx_rj]
-    k_post_rj = calculate_n_clusters(c_post_rj)
-
-    save_standard_figures(c_post_rj, α_post_rj, s_post_rj,
-        samples_rj.logpost[idx_rj],
-        "$(out_dir)/figures/rjmcmc",
-        "RJMCMC r=$(r_fixed) [$(metric_label)]", :darkorange)
-
-    ar_rj = acceptance_rates(diag_rj)
-    return (
-        r            = r_fixed,
-        metric_label = metric_label,
-        mean_K       = mean(k_post_rj),
-        median_K     = median(k_post_rj),
-        mode_K       = argmax(countmap(k_post_rj)),
-        mean_α       = mean(α_post_rj),
-        mean_s       = mean(s_post_rj),
-        ess_K        = effective_sample_size(Float64.(k_post_rj)),
-        ar_birth     = ar_rj.birth,
-        ar_death     = ar_rj.death,
-        time_s       = t_elapsed,
-    )
-end
-
-# Identify best r for each metric
-best_by_waic = grid_results[argmin([res.waic     for res in grid_results])].r
-best_by_crps = grid_results[argmin([res.crps     for res in grid_results])].r
 best_by_elpd = grid_results[argmax([res.elpd_loo for res in grid_results])].r
-best_by_mal  = grid_results[argmin([res.mal      for res in grid_results])].r
-
-println("  Best r by WAIC     = $(best_by_waic)")
-println("  Best r by CRPS     = $(best_by_crps)")
 println("  Best r by ELPD-LOO = $(best_by_elpd)")
-println("  Best r by MAL      = $(best_by_mal)")
 
-# Collect (r => metrics it wins) mapping, then run each unique r once
-metric_winners = [
-    (best_by_waic, "best_waic"),
-    (best_by_crps, "best_crps"),
-    (best_by_elpd, "best_elpd"),
-    (best_by_mal,  "best_mal"),
-]
-unique_pairs = Dict{Float64, Vector{String}}()
-for (r, lbl) in metric_winners
-    push!(get!(unique_pairs, r, String[]), lbl)
-end
-jobs = sort([(r, join(lbls, "_AND_")) for (r, lbls) in unique_pairs], by = x -> x[1])
-println("  Unique r values to run: $([j[1] for j in jobs])")
-
-mkpath("results/walkfree/best_models")
+mkpath("results/walkfree/rjmcmc_elpd/figures")
+mkpath("results/walkfree/rjmcmc_elpd/chains")
 
 opts_best = MCMCOptions(
     n_samples         = n_samples,
@@ -931,51 +813,79 @@ opts_best = MCMCOptions(
     prop_sds          = Dict(:s_ddcrp => 0.3)
 )
 
-println("  Running $(length(jobs)) RJMCMC chain(s) in parallel via pmap...")
-best_results = pmap(jobs) do (r_fixed, label)
-    run_best_rjmcmc(r_fixed, label, y, P, D, n_burnin,
-                    ddcrp_params, priors_unmarg, opts_best)
-end
-sort!(best_results, by = res -> res.r)
+Random.seed!(2025)
+t_start_best = time()
+samples_best_rj, diag_best_rj = mcmc(
+    NBPopulationRates(),
+    y, P, D,
+    ddcrp_params, priors_unmarg,
+    PriorProposal();
+    fixed_dim_proposal = NoUpdate(),
+    opts               = opts_best,
+    init_params        = Dict{Symbol,Any}(:r => Float64(best_by_elpd))
+)
+t_elapsed_best = time() - t_start_best
+println("  Total time: $(round(t_elapsed_best, digits=1)) s")
+
+@save "results/walkfree/rjmcmc_elpd/chains/samples_rjmcmc.jld2" samples_best_rj diag_best_rj best_by_elpd
+println("  Chain saved.")
+
+idx_best    = (n_burnin + 1):size(samples_best_rj.c, 1)
+c_post_best = samples_best_rj.c[idx_best, :]
+α_post_best = samples_best_rj.α_ddcrp[idx_best]
+s_post_best = samples_best_rj.s_ddcrp[idx_best]
+k_post_best = calculate_n_clusters(c_post_best)
+
+save_standard_figures(c_post_best, α_post_best, s_post_best,
+    samples_best_rj.logpost[idx_best],
+    "results/walkfree/rjmcmc_elpd/figures/rjmcmc",
+    "RJMCMC r=$(best_by_elpd)", :darkorange)
+
+ar_best = acceptance_rates(diag_best_rj)
 
 # ── Print results ─────────────────────────────────────────────────────────────
-println("\n=== Best-per-metric RJMCMC results ===")
-hdr = rpad("Metric label", 32) * rpad("r", 7) * rpad("mean_K", 9) *
-      rpad("mode_K", 9) * rpad("mean_α", 10) * rpad("mean_s", 10) *
-      rpad("ESS(K)", 9) * rpad("ar_birth", 10) * rpad("ar_death", 10) * "time(s)"
-println(hdr)
-println("-"^112)
-for res in best_results
-    @printf "%-32s %-7.1f %-9.2f %-9d %-10.3f %-10.3f %-9.1f %-10.3f %-10.3f %.1f\n" res.metric_label res.r res.mean_K res.mode_K res.mean_α res.mean_s res.ess_K res.ar_birth res.ar_death res.time_s
-end
+res = (
+    r        = best_by_elpd,
+    mean_K   = mean(k_post_best),
+    mode_K   = argmax(countmap(k_post_best)),
+    mean_α   = mean(α_post_best),
+    mean_s   = mean(s_post_best),
+    ess_K    = effective_sample_size(Float64.(k_post_best)),
+    ar_birth = ar_best.birth,
+    ar_death = ar_best.death,
+    time_s   = t_elapsed_best,
+)
+println("\n=== Best ELPD-LOO RJMCMC results (r=$(res.r)) ===")
+println("  mean_K   = $(round(res.mean_K,   digits=2))")
+println("  mode_K   = $(res.mode_K)")
+println("  mean_α   = $(round(res.mean_α,   digits=3))")
+println("  mean_s   = $(round(res.mean_s,   digits=3))")
+println("  ESS(K)   = $(round(res.ess_K,    digits=1))")
+println("  ar_birth = $(round(res.ar_birth, digits=3))")
+println("  ar_death = $(round(res.ar_death, digits=3))")
+println("  time     = $(round(res.time_s,   digits=1)) s")
 
-# Marg-Gibbs grid reference for the same r values
-best_r_set = Set([res.r for res in best_results])
-ref_rows   = filter(res -> res.r in best_r_set, grid_results)
-println("\n=== Marg-Gibbs reference (from grid search) ===")
-println(rpad("r", 7) * rpad("mean_K", 9) * rpad("WAIC", 13) *
-        rpad("ELPD-LOO", 14) * rpad("CRPS", 10) * "MAL")
-println("-"^55)
-for res in ref_rows
-    @printf "%-7.1f %-9.2f %-13.2f %-14.2f %-10.4f %.4f\n" res.r res.mean_K res.waic res.elpd_loo res.crps res.mal
-end
+# Marg-Gibbs reference for the same r
+ref = only(filter(g -> g.r == res.r, grid_results))
+println("\n=== Marg-Gibbs reference (r=$(ref.r)) ===")
+println("  mean_K   = $(round(ref.mean_K,   digits=2))")
+println("  ELPD-LOO = $(round(ref.elpd_loo, digits=2))")
 
 # Save summary CSV
 df_best = DataFrame(
-    metric_label = [res.metric_label for res in best_results],
-    r            = [res.r            for res in best_results],
-    mean_K       = [res.mean_K       for res in best_results],
-    mode_K       = [res.mode_K       for res in best_results],
-    mean_α       = [res.mean_α       for res in best_results],
-    mean_s       = [res.mean_s       for res in best_results],
-    ess_K        = [res.ess_K        for res in best_results],
-    ar_birth     = [res.ar_birth     for res in best_results],
-    ar_death     = [res.ar_death     for res in best_results],
-    time_s       = [res.time_s       for res in best_results],
+    r        = [best_by_elpd],
+    mean_K   = [res.mean_K],
+    mode_K   = [res.mode_K],
+    mean_α   = [res.mean_α],
+    mean_s   = [res.mean_s],
+    ess_K    = [res.ess_K],
+    ar_birth = [res.ar_birth],
+    ar_death = [res.ar_death],
+    time_s   = [res.time_s],
 )
-CSV.write("results/walkfree/best_models/rjmcmc_best_per_metric.csv", df_best)
-println("\n  Summary saved to results/walkfree/best_models/rjmcmc_best_per_metric.csv")
-println("\nBest-per-metric RJMCMC section complete.")
+CSV.write("results/walkfree/rjmcmc_elpd/rjmcmc_best_elpd.csv", df_best)
+println("\n  Summary saved to results/walkfree/rjmcmc_elpd/rjmcmc_best_elpd.csv")
+println("\nRJMCMC best ELPD-LOO section complete.")
 
 # ============================================================================
 # Summary
