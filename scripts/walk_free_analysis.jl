@@ -946,9 +946,7 @@ hdr = rpad("Metric label", 32) * rpad("r", 7) * rpad("mean_K", 9) *
 println(hdr)
 println("-"^112)
 for res in best_results
-    @printf "%-32s %-7.1f %-9.2f %-9d %-10.3f %-10.3f %-9.1f %-10.3f %-10.3f %.1f\n" \
-        res.metric_label res.r res.mean_K res.mode_K res.mean_α res.mean_s \
-        res.ess_K res.ar_birth res.ar_death res.time_s
+    @printf "%-32s %-7.1f %-9.2f %-9d %-10.3f %-10.3f %-9.1f %-10.3f %-10.3f %.1f\n" res.metric_label res.r res.mean_K res.mode_K res.mean_α res.mean_s res.ess_K res.ar_birth res.ar_death res.time_s
 end
 
 # Marg-Gibbs grid reference for the same r values
@@ -959,8 +957,7 @@ println(rpad("r", 7) * rpad("mean_K", 9) * rpad("WAIC", 13) *
         rpad("ELPD-LOO", 14) * rpad("CRPS", 10) * "MAL")
 println("-"^55)
 for res in ref_rows
-    @printf "%-7.1f %-9.2f %-13.2f %-14.2f %-10.4f %.4f\n" \
-        res.r res.mean_K res.waic res.elpd_loo res.crps res.mal
+    @printf "%-7.1f %-9.2f %-13.2f %-14.2f %-10.4f %.4f\n" res.r res.mean_K res.waic res.elpd_loo res.crps res.mal
 end
 
 # Save summary CSV
