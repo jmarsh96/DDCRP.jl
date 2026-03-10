@@ -843,6 +843,144 @@ savefig(p_s_ov, "results/walkfree/figures/s_density_marg_vs_rjmcmc.png")
 println("\nRJMCMC vs Marg-Gibbs comparison figures saved to results/walkfree/figures/")
 
 # ============================================================================
+# Section 9 – Best-per-metric RJMCMC (parallel via pmap)
+# ============================================================================
+
+println("\n[Section 9] Best-per-metric RJMCMC confirmation")
+
+@everywhere function run_best_rjmcmc(r_fixed, metric_label, y, P, D, n_burnin,
+                                     ddcrp_params, priors_unmarg, opts_rj)
+    r_tag   = replace(@sprintf("%.1f", r_fixed), "." => "p")
+    out_dir = "results/walkfree/best_models/$(metric_label)_r$(r_tag)"
+    mkpath("$(out_dir)/figures")
+    mkpath("$(out_dir)/chains")
+
+    t_start = time()
+    samples_rj, diag_rj = mcmc(
+        NBPopulationRates(),
+        y, P, D,
+        ddcrp_params, priors_unmarg,
+        PriorProposal();
+        fixed_dim_proposal = NoUpdate(),
+        opts               = opts_rj,
+        init_params        = Dict{Symbol,Any}(:r => Float64(r_fixed))
+    )
+    t_elapsed = time() - t_start
+
+    @save "$(out_dir)/chains/samples_rjmcmc.jld2" samples_rj diag_rj r_fixed metric_label
+
+    idx_rj    = (n_burnin + 1):size(samples_rj.c, 1)
+    c_post_rj = samples_rj.c[idx_rj, :]
+    α_post_rj = samples_rj.α_ddcrp[idx_rj]
+    s_post_rj = samples_rj.s_ddcrp[idx_rj]
+    k_post_rj = calculate_n_clusters(c_post_rj)
+
+    save_standard_figures(c_post_rj, α_post_rj, s_post_rj,
+        samples_rj.logpost[idx_rj],
+        "$(out_dir)/figures/rjmcmc",
+        "RJMCMC r=$(r_fixed) [$(metric_label)]", :darkorange)
+
+    ar_rj = acceptance_rates(diag_rj)
+    return (
+        r            = r_fixed,
+        metric_label = metric_label,
+        mean_K       = mean(k_post_rj),
+        median_K     = median(k_post_rj),
+        mode_K       = argmax(countmap(k_post_rj)),
+        mean_α       = mean(α_post_rj),
+        mean_s       = mean(s_post_rj),
+        ess_K        = effective_sample_size(Float64.(k_post_rj)),
+        ar_birth     = ar_rj.birth,
+        ar_death     = ar_rj.death,
+        time_s       = t_elapsed,
+    )
+end
+
+# Identify best r for each metric
+best_by_waic = grid_results[argmin([res.waic     for res in grid_results])].r
+best_by_crps = grid_results[argmin([res.crps     for res in grid_results])].r
+best_by_elpd = grid_results[argmax([res.elpd_loo for res in grid_results])].r
+best_by_mal  = grid_results[argmin([res.mal      for res in grid_results])].r
+
+println("  Best r by WAIC     = $(best_by_waic)")
+println("  Best r by CRPS     = $(best_by_crps)")
+println("  Best r by ELPD-LOO = $(best_by_elpd)")
+println("  Best r by MAL      = $(best_by_mal)")
+
+# Collect (r => metrics it wins) mapping, then run each unique r once
+metric_winners = [
+    (best_by_waic, "best_waic"),
+    (best_by_crps, "best_crps"),
+    (best_by_elpd, "best_elpd"),
+    (best_by_mal,  "best_mal"),
+]
+unique_pairs = Dict{Float64, Vector{String}}()
+for (r, lbl) in metric_winners
+    push!(get!(unique_pairs, r, String[]), lbl)
+end
+jobs = sort([(r, join(lbls, "_AND_")) for (r, lbls) in unique_pairs], by = x -> x[1])
+println("  Unique r values to run: $([j[1] for j in jobs])")
+
+mkpath("results/walkfree/best_models")
+
+opts_best = MCMCOptions(
+    n_samples         = n_samples,
+    verbose           = false,
+    track_diagnostics = true,
+    infer_params      = Dict(:r => false, :c => true, :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:s_ddcrp => 0.3)
+)
+
+println("  Running $(length(jobs)) RJMCMC chain(s) in parallel via pmap...")
+best_results = pmap(jobs) do (r_fixed, label)
+    run_best_rjmcmc(r_fixed, label, y, P, D, n_burnin,
+                    ddcrp_params, priors_unmarg, opts_best)
+end
+sort!(best_results, by = res -> res.r)
+
+# ── Print results ─────────────────────────────────────────────────────────────
+println("\n=== Best-per-metric RJMCMC results ===")
+hdr = rpad("Metric label", 32) * rpad("r", 7) * rpad("mean_K", 9) *
+      rpad("mode_K", 9) * rpad("mean_α", 10) * rpad("mean_s", 10) *
+      rpad("ESS(K)", 9) * rpad("ar_birth", 10) * rpad("ar_death", 10) * "time(s)"
+println(hdr)
+println("-"^112)
+for res in best_results
+    @printf "%-32s %-7.1f %-9.2f %-9d %-10.3f %-10.3f %-9.1f %-10.3f %-10.3f %.1f\n" \
+        res.metric_label res.r res.mean_K res.mode_K res.mean_α res.mean_s \
+        res.ess_K res.ar_birth res.ar_death res.time_s
+end
+
+# Marg-Gibbs grid reference for the same r values
+best_r_set = Set([res.r for res in best_results])
+ref_rows   = filter(res -> res.r in best_r_set, grid_results)
+println("\n=== Marg-Gibbs reference (from grid search) ===")
+println(rpad("r", 7) * rpad("mean_K", 9) * rpad("WAIC", 13) *
+        rpad("ELPD-LOO", 14) * rpad("CRPS", 10) * "MAL")
+println("-"^55)
+for res in ref_rows
+    @printf "%-7.1f %-9.2f %-13.2f %-14.2f %-10.4f %.4f\n" \
+        res.r res.mean_K res.waic res.elpd_loo res.crps res.mal
+end
+
+# Save summary CSV
+df_best = DataFrame(
+    metric_label = [res.metric_label for res in best_results],
+    r            = [res.r            for res in best_results],
+    mean_K       = [res.mean_K       for res in best_results],
+    mode_K       = [res.mode_K       for res in best_results],
+    mean_α       = [res.mean_α       for res in best_results],
+    mean_s       = [res.mean_s       for res in best_results],
+    ess_K        = [res.ess_K        for res in best_results],
+    ar_birth     = [res.ar_birth     for res in best_results],
+    ar_death     = [res.ar_death     for res in best_results],
+    time_s       = [res.time_s       for res in best_results],
+)
+CSV.write("results/walkfree/best_models/rjmcmc_best_per_metric.csv", df_best)
+println("\n  Summary saved to results/walkfree/best_models/rjmcmc_best_per_metric.csv")
+println("\nBest-per-metric RJMCMC section complete.")
+
+# ============================================================================
 # Summary
 # ============================================================================
 
