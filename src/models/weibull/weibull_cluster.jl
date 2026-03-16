@@ -111,6 +111,8 @@ struct WeibullClusterSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -306,8 +308,14 @@ function table_contribution(
 
     (k <= 0 || λ <= 0) && return -Inf
 
-    n = length(table)
-    y_table = view(y, table)
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+
+    log_prior_k = logpdf(Gamma(priors.k_a, 1/priors.k_b), k)
+    log_prior_λ = logpdf(Gamma(priors.λ_a, 1/priors.λ_b), λ)
+    isempty(obs_table) && return log_prior_k + log_prior_λ
+
+    n = length(obs_table)
+    y_table = view(y, obs_table)
 
     any(x -> x <= 0, y_table) && return -Inf
 
@@ -316,10 +324,28 @@ function table_contribution(
 
     log_lik = n * log(k) + n * k * log(λ) + (k - 1) * sum_log_y - λ^k * sum_yk
 
-    log_prior_k = logpdf(Gamma(priors.k_a, 1/priors.k_b), k)
-    log_prior_λ = logpdf(Gamma(priors.λ_a, 1/priors.λ_b), λ)
-
     return log_lik + log_prior_k + log_prior_λ
+end
+
+"""
+    impute_y(::WeibullCluster, i, state, data, priors)
+
+Draw a value for missing observation i from Weibull(k_k, 1/λ_k) using the
+current cluster shape and rate parameters.
+"""
+function impute_y(
+    ::WeibullCluster,
+    i::Int,
+    state::WeibullClusterState,
+    data::ContinuousData,
+    priors::WeibullClusterPriors
+)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    key = sort(table)
+    k = state.k_dict[key]
+    λ = state.λ_dict[key]
+    return rand(Weibull(k, 1.0 / λ))
 end
 
 # ============================================================================
@@ -538,7 +564,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::WeibullCluster, n_samples::Int, n::Int)
+function allocate_samples(::WeibullCluster, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     WeibullClusterSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # k (per observation)
@@ -546,6 +572,8 @@ function allocate_samples(::WeibullCluster, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

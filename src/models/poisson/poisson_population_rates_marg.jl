@@ -91,6 +91,8 @@ struct PoissonPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 requires_population(::PoissonPopulationRatesMarg) = true
@@ -120,9 +122,11 @@ function table_contribution(
     y = observations(data)
     P = population(data)
 
-    n_k = length(table)
-    y_k = view(y, table)
-    P_k = P isa Real ? fill(Float64(P), n_k) : Float64.(view(P, table))
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    isempty(obs_table) && return 0.0
+    n_k = length(obs_table)
+    y_k = view(y, obs_table)
+    P_k = P isa Real ? fill(Float64(P), n_k) : Float64.(view(P, obs_table))
 
     S_k       = Float64(sum(y_k))
     P_k_total = sum(P_k)
@@ -138,6 +142,32 @@ function table_contribution(
     integral = loggamma(S_k + priors.ρ_a) - (S_k + priors.ρ_a) * log(P_k_total + priors.ρ_b)
 
     return offset_terms + prior_norm + integral
+end
+
+"""
+    impute_y(::PoissonPopulationRatesMarg, i, state, data, priors)
+
+Draw a value for missing observation i from the cluster posterior predictive.
+Samples ρ_k from its Gamma posterior given observed members, then y[i] ~ Poisson(P[i] * ρ_k).
+"""
+function impute_y(
+    ::PoissonPopulationRatesMarg,
+    i::Int,
+    state::PoissonPopulationRatesMargState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesMargPriors
+)
+    y = observations(data)
+    P = population(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    obs_table = [j for j in table if j != i && !ismissing(y[j])]
+    n_k = length(obs_table)
+    S_k = isempty(obs_table) ? 0.0 : Float64(sum(y[j] for j in obs_table))
+    P_k_total = isempty(obs_table) ? 0.0 : sum(P isa Real ? Float64(P) : Float64(P[j]) for j in obs_table)
+    ρ_k = rand(Gamma(priors.ρ_a + S_k, 1.0 / (priors.ρ_b + P_k_total)))
+    P_i = P isa Real ? Float64(P) : Float64(P[i])
+    return rand(Poisson(P_i * ρ_k))
 end
 
 # ============================================================================
@@ -212,12 +242,14 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::PoissonPopulationRatesMarg, n_samples::Int, n::Int)
+function allocate_samples(::PoissonPopulationRatesMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     PoissonPopulationRatesMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

@@ -111,6 +111,8 @@ struct NBPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 requires_population(::NBPopulationRatesMarg) = true
@@ -319,7 +321,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int)
+function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBPopulationRatesMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
@@ -327,6 +329,8 @@ function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

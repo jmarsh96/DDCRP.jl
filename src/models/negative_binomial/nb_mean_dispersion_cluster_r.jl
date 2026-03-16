@@ -98,6 +98,8 @@ struct NBMeanDispersionClusterRSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 
@@ -237,14 +239,39 @@ function table_contribution(
     m = state.m_dict[key]
     r = state.r_dict[key]
 
-    # NegBin log-likelihood for all observations in table
-    log_lik = sum(negbin_logpdf(y[i], m, r) for i in table)
+    obs_table = any(ismissing, y) ? [i for i in table if !ismissing(y[i])] : table
 
     # Priors
     log_prior_m = logpdf(InverseGamma(priors.m_a, priors.m_b), m)
     log_prior_r = logpdf(Gamma(priors.r_a, 1/priors.r_b), r)
+    isempty(obs_table) && return log_prior_m + log_prior_r
+
+    # NegBin log-likelihood for observed observations in table
+    log_lik = sum(negbin_logpdf(y[i], m, r) for i in obs_table)
 
     return log_lik + log_prior_m + log_prior_r
+end
+
+"""
+    impute_y(::NBMeanDispersionClusterR, i, state, data, priors)
+
+Draw a value for missing observation i from NegBin(r_k, r_k/(r_k+m_k)) using
+the current cluster mean and cluster dispersion.
+"""
+function impute_y(
+    ::NBMeanDispersionClusterR,
+    i::Int,
+    state::NBMeanDispersionClusterRState,
+    data::CountData,
+    priors::NBMeanDispersionClusterRPriors
+)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    key = sort(table)
+    m = state.m_dict[key]
+    r = state.r_dict[key]
+    p = r / (r + m)
+    return rand(NegativeBinomial(r, p))
 end
 
 # ============================================================================
@@ -415,7 +442,8 @@ function initialise_state(
     r_dict = Dict{Vector{Int}, Float64}()
     for table in tables
         key = sort(table)
-        m_dict[key] = max(mean(view(y, table)), 0.1)
+        obs_vals = collect(skipmissing(view(y, table)))
+        m_dict[key] = isempty(obs_vals) ? max(priors.m_a / priors.m_b, 0.1) : max(mean(obs_vals), 0.1)
         r_dict[key] = 1.0
     end
     return NBMeanDispersionClusterRState(c, m_dict, r_dict)
@@ -430,7 +458,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBMeanDispersionClusterR, n_samples::Int, n::Int)
+function allocate_samples(::NBMeanDispersionClusterR, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBMeanDispersionClusterRSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # r (per observation)
@@ -438,6 +466,8 @@ function allocate_samples(::NBMeanDispersionClusterR, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

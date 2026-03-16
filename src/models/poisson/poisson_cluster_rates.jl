@@ -83,6 +83,8 @@ struct PoissonClusterRatesSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -148,14 +150,34 @@ function table_contribution(
 )
     y = observations(data)
     λ = state.λ_dict[sort(table)]
-    n_k = length(table)
-    S_k = sum(view(y, table))
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    isempty(obs_table) && return (priors.λ_a - 1) * log(λ) - priors.λ_b * λ
+    n_k = length(obs_table)
+    S_k = sum(view(y, obs_table))
 
     # Poisson likelihood + Gamma prior on λ
-    log_lik = S_k * log(λ) - n_k * λ - sum(loggamma.(view(y, table) .+ 1))
+    log_lik = S_k * log(λ) - n_k * λ - sum(loggamma.(view(y, obs_table) .+ 1))
     log_prior = (priors.λ_a - 1) * log(λ) - priors.λ_b * λ
 
     return log_lik + log_prior
+end
+
+"""
+    impute_y(::PoissonClusterRates, i, state, data, priors)
+
+Draw a value for missing observation i from Poisson with current cluster rate.
+"""
+function impute_y(
+    ::PoissonClusterRates,
+    i::Int,
+    state::PoissonClusterRatesState,
+    data::CountData,
+    priors::PoissonClusterRatesPriors
+)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    λ = state.λ_dict[sort(table)]
+    return rand(Poisson(λ))
 end
 
 # ============================================================================
@@ -268,13 +290,15 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::PoissonClusterRates, n_samples::Int, n::Int)
+function allocate_samples(::PoissonClusterRates, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     PoissonClusterRatesSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ - stores cluster rate per observation
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

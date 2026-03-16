@@ -114,6 +114,8 @@ struct GammaClusterShapeMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -354,9 +356,15 @@ function table_contribution(
         return -Inf
     end
 
-    n = length(table)
-    sum_y = sum(view(y, table))
-    sum_log_y = sum(log, view(y, table))
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+
+    # Prior on α_k: α ~ Gamma(α_a, α_b) where α_b is rate parameter
+    log_prior_α = logpdf(Gamma(priors.α_a, 1/priors.α_b), α)
+    isempty(obs_table) && return log_prior_α
+
+    n = length(obs_table)
+    sum_y = sum(view(y, obs_table))
+    sum_log_y = sum(log, view(y, obs_table))
 
     # Marginal likelihood (integrating out β)
     log_lik = (α - 1) * sum_log_y -
@@ -366,10 +374,32 @@ function table_contribution(
               priors.β_a * log(priors.β_b) -
               (n * α + priors.β_a) * log(sum_y + priors.β_b)
 
-    # Prior on α_k: α ~ Gamma(α_a, α_b) where α_b is rate parameter
-    log_prior_α = logpdf(Gamma(priors.α_a, 1/priors.α_b), α)
-
     return log_lik + log_prior_α
+end
+
+"""
+    impute_y(::GammaClusterShapeMarg, i, state, data, priors)
+
+Draw a value for missing observation i from the posterior predictive of its
+cluster: sample β_k from its posterior Gamma, then y ~ Gamma(α_k, 1/β_k).
+"""
+function impute_y(
+    ::GammaClusterShapeMarg,
+    i::Int,
+    state::GammaClusterShapeMargState,
+    data::ContinuousData,
+    priors::GammaClusterShapeMargPriors
+)
+    y = observations(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    key = sort(table)
+    α = state.α_dict[key]
+    obs_table = [j for j in table if j != i && !ismissing(y[j])]
+    n_obs = length(obs_table)
+    sum_y_obs = isempty(obs_table) ? 0.0 : Float64(sum(y[j] for j in obs_table))
+    β_k = rand(Gamma(n_obs * α + priors.β_a, 1.0 / (sum_y_obs + priors.β_b)))
+    return rand(Gamma(α, 1.0 / β_k))
 end
 
 # ============================================================================
@@ -539,13 +569,15 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::GammaClusterShapeMarg, n_samples::Int, n::Int)
+function allocate_samples(::GammaClusterShapeMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     GammaClusterShapeMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # α (per observation)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

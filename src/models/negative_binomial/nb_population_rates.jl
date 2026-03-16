@@ -118,6 +118,8 @@ struct NBPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 requires_population(::NBPopulationRates) = true
@@ -234,13 +236,35 @@ function table_contribution(
     λ_k = view(state.λ, table)
     Λ_k = sum(λ_k)
 
-    poisson_const = sum(Float64(y_k[j]) * log(P_k[j]) - loggamma(Float64(y_k[j]) + 1) for j in 1:n_k)
-    lambda_terms  = sum((Float64(y_k[j]) + r - 1) * log(λ_k[j]) - P_k[j] * λ_k[j] for j in 1:n_k)
+    # For missing y[j], treat as 0 (excludes Poisson likelihood contribution,
+    # keeps only Gamma prior term (r-1)*log(λ_j) - P_j*λ_j for that obs)
+    y_eff = any(ismissing, y) ? [ismissing(y_k[j]) ? 0.0 : Float64(y_k[j]) for j in 1:n_k] : Float64.(y_k)
+
+    poisson_const = sum(y_eff[j] * log(P_k[j]) - loggamma(y_eff[j] + 1) for j in 1:n_k)
+    lambda_terms  = sum((y_eff[j] + r - 1) * log(λ_k[j]) - P_k[j] * λ_k[j] for j in 1:n_k)
     gamma_norm    = n_k * (r * log(r) - loggamma(r))
     ig_norm       = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
     gamma_kernel  = -(n_k * r + priors.γ_a + 1) * log(γ) - (r * Λ_k + priors.γ_b) / γ
 
     return poisson_const + lambda_terms + gamma_norm + ig_norm + gamma_kernel
+end
+
+"""
+    impute_y(::NBPopulationRates, i, state, data, priors)
+
+Draw a value for missing observation i from Poisson(P_i * λ_i) using the
+current individual rate.
+"""
+function impute_y(
+    ::NBPopulationRates,
+    i::Int,
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    P = population(data)
+    P_i = P isa Int ? Float64(P) : Float64(P[i])
+    return rand(Poisson(P_i * state.λ[i]))
 end
 
 # ============================================================================
@@ -402,7 +426,7 @@ function initialise_state(
 
     # Initialise λ_i from smoothed empirical rate
     P_vec = P isa Int ? fill(Float64(P), n) : Float64.(P)
-    λ0    = [max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
+    λ0    = [max(ismissing(y[i]) ? 0.01 : Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
     # Initialise γ_k from conjugate posterior given λ0
     γ_dict = Dict{Vector{Int}, Float64}()
@@ -427,7 +451,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBPopulationRates, n_samples::Int, n::Int)
+function allocate_samples(::NBPopulationRates, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBPopulationRatesSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
@@ -436,6 +460,8 @@ function allocate_samples(::NBPopulationRates, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

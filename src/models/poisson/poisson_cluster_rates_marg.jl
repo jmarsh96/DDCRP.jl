@@ -79,6 +79,8 @@ struct PoissonClusterRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 
@@ -100,16 +102,41 @@ function table_contribution(
     priors::PoissonClusterRatesMargPriors
 )
     y = observations(data)
-    n_k = length(table)
-    S_k = sum(view(y, table))
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    isempty(obs_table) && return 0.0
+    n_k = length(obs_table)
+    S_k = sum(view(y, obs_table))
 
     # Gamma-Poisson marginal likelihood
     # p(y_k | α, β) = Γ(S_k + α) / (Γ(α) * prod(y_ki!)) * β^α / (n_k + β)^(S_k + α)
     log_contrib = loggamma(S_k + priors.λ_a) - loggamma(priors.λ_a)
     log_contrib += priors.λ_a * log(priors.λ_b) - (S_k + priors.λ_a) * log(n_k + priors.λ_b)
-    log_contrib -= sum(loggamma.(view(y, table) .+ 1))  # -log(y!)
+    log_contrib -= sum(loggamma.(view(y, obs_table) .+ 1))  # -log(y!)
 
     return log_contrib
+end
+
+"""
+    impute_y(::PoissonClusterRatesMarg, i, state, data, priors)
+
+Draw a value for missing observation i from the cluster posterior predictive.
+Samples λ_k from its Gamma posterior given observed cluster members, then y[i] ~ Poisson(λ_k).
+"""
+function impute_y(
+    ::PoissonClusterRatesMarg,
+    i::Int,
+    state::PoissonClusterRatesMargState,
+    data::CountData,
+    priors::PoissonClusterRatesMargPriors
+)
+    y = observations(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    obs_table = [j for j in table if j != i && !ismissing(y[j])]
+    n_k = length(obs_table)
+    S_k = isempty(obs_table) ? 0 : sum(y[j] for j in obs_table)
+    λ_k = rand(Gamma(priors.λ_a + S_k, 1.0 / (priors.λ_b + n_k)))
+    return rand(Poisson(λ_k))
 end
 
 # ============================================================================
@@ -185,12 +212,14 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::PoissonClusterRatesMarg, n_samples::Int, n::Int)
+function allocate_samples(::PoissonClusterRatesMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     PoissonClusterRatesMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

@@ -26,7 +26,8 @@ function update_c!(
     proposal::BirthProposal,
     fixed_dim_proposal::FixedDimensionProposal,
     log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
+    opts::MCMCOptions;
+    missing_mask::Union{Nothing, AbstractVector{Bool}} = nothing
 )
     diagnostics = Vector{Tuple{Symbol, Int, Int, Bool}}()
 
@@ -35,12 +36,25 @@ function update_c!(
     end
 
     use_gibbs = proposal isa ConjugateProposal
+    y_data = observations(data)
 
     for i in 1:nobs(data)
-        if use_gibbs
-            move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
+        if !isnothing(missing_mask) && missing_mask[i]
+            # Missing observation: sample assignment from DDCRP prior only,
+            # then impute y[i] from the cluster's posterior predictive.
+            y_data[i] = missing
+            if use_gibbs
+                move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
+            else
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP)
+            end
+            y_data[i] = impute_y(model, i, state, data, priors)
         else
-            move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP)
+            if use_gibbs
+                move_type, j_star, accepted = update_c_gibbs!(model, i, state, data, priors, log_DDCRP)
+            else
+                move_type, j_star, accepted = update_c_rjmcmc!(model, i, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP)
+            end
         end
         push!(diagnostics, (move_type, i, j_star, accepted))
     end
@@ -115,8 +129,21 @@ function mcmc(
         end
     end
 
+    # Detect missing observations
+    y_raw = observations(data)
+    has_missing = any(ismissing, y_raw)
+    missing_indices = has_missing ? findall(ismissing, y_raw) : Int[]
+    missing_mask = has_missing ? ismissing.(y_raw) : nothing
+
     # Allocate sample storage (dispatches on model type)
-    samples = allocate_samples(model, opts.n_samples, n)
+    samples = allocate_samples(model, opts.n_samples, n, missing_indices)
+
+    # Initial imputation: give update_params! valid y values on first iteration
+    if has_missing
+        for i in missing_indices
+            y_raw[i] = impute_y(model, i, state, data, priors)
+        end
+    end
 
     # Initialize diagnostics
     diag = opts.track_diagnostics ?
@@ -125,6 +152,13 @@ function mcmc(
     # Store initial state
     extract_samples!(model, state, samples, 1)
     samples.logpost[1] = posterior(model, data, state, priors, log_DDCRP)
+
+    # Store initial imputed values
+    if has_missing
+        for (k, i) in enumerate(missing_indices)
+            samples.y_imp[1, k] = Float64(y_raw[i])
+        end
+    end
 
     # DDCRP hyperparameter inference setup
     α_current = ddcrp_params.α
@@ -144,7 +178,8 @@ function mcmc(
         update_params!(model, state, data, priors, tables, log_DDCRP, opts)
 
         # Update customer assignments (gibbs or rjmcmc based on model/proposal)
-        result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts)
+        result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts;
+                           missing_mask=missing_mask)
 
         # Update DDCRP hyperparameters if requested
         if infer_ddcrp
@@ -180,6 +215,13 @@ function mcmc(
         samples.logpost[iter] = posterior(model, data, state, priors, log_DDCRP)
         samples.α_ddcrp[iter] = α_current
         samples.s_ddcrp[iter] = s_current
+
+        # Record imputed values for missing observations
+        if has_missing
+            for (k, i) in enumerate(missing_indices)
+                samples.y_imp[iter, k] = Float64(y_raw[i])
+            end
+        end
 
         # Progress
         if opts.verbose && (iter % 100 == 0 || iter == 1)

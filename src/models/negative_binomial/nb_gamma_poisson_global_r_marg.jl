@@ -97,6 +97,8 @@ struct NBGammaPoissonGlobalRMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -125,6 +127,22 @@ function table_contribution(
     data_term = (r - 1) * sum(log.(view(state.λ, table)))
 
     return norm_const + integral_term + data_term
+end
+
+"""
+    impute_y(::NBGammaPoissonGlobalRMarg, i, state, data, priors)
+
+Draw a value for missing observation i from Poisson(λ_i) using the current
+latent rate.
+"""
+function impute_y(
+    ::NBGammaPoissonGlobalRMarg,
+    i::Int,
+    state::NBGammaPoissonGlobalRMargState,
+    data::CountData,
+    priors::NBGammaPoissonGlobalRMargPriors
+)
+    return rand(Poisson(state.λ[i]))
 end
 
 # ============================================================================
@@ -266,7 +284,7 @@ function initialise_state(
     y = observations(data)
     D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
-    λ = Float64.(y) .+ 1.0  # Initialize λ near observed counts
+    λ = [ismissing(yi) ? 1.0 : Float64(yi) + 1.0 for yi in y]
     r = 1.0  # Initial dispersion
     return NBGammaPoissonGlobalRMargState(c, λ, r)
 end
@@ -280,7 +298,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBGammaPoissonGlobalRMarg, n_samples::Int, n::Int)
+function allocate_samples(::NBGammaPoissonGlobalRMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBGammaPoissonGlobalRMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # λ
@@ -288,6 +306,8 @@ function allocate_samples(::NBGammaPoissonGlobalRMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

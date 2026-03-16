@@ -300,7 +300,7 @@ Observed count data for Poisson and Negative Binomial models.
 - `D::Td`: Distance matrix (AbstractMatrix)
 """
 struct CountData{Ty<:AbstractVector, Td<:AbstractMatrix} <: AbstractObservedData
-    y::Ty
+    y::Ty  # may contain Missing values for posterior predictive inference
     D::Td
 end
 
@@ -315,7 +315,7 @@ Observed count data with number of trials for Binomial models.
 - `D::Td`: Distance matrix (AbstractMatrix)
 """
 struct CountDataWithTrials{Ty<:AbstractVector, Tn<:Union{Int, <:AbstractVector{Int}}, Td<:AbstractMatrix} <: AbstractObservedData
-    y::Ty
+    y::Ty  # may contain Missing values for posterior predictive inference
     N::Tn
     D::Td
 end
@@ -331,7 +331,7 @@ Observed count data with population/exposure offsets for Poisson/NB population m
 - `D::Td`: Distance matrix (AbstractMatrix)
 """
 struct CountDataWithPopulation{Ty<:AbstractVector, Tp<:Union{<:Real,<:AbstractVector{<:Real}}, Td<:AbstractMatrix} <: AbstractObservedData
-    y::Ty
+    y::Ty  # may contain Missing values for posterior predictive inference
     P::Tp
     D::Td
 end
@@ -345,8 +345,8 @@ Observed continuous data for models like Skew Normal.
 - `y::Ty`: Observed values (AbstractVector{<:Real})
 - `D::Td`: Distance matrix (AbstractMatrix)
 """
-struct ContinuousData{Ty<:AbstractVector{<:Real}, Td<:AbstractMatrix} <: AbstractObservedData
-    y::Ty
+struct ContinuousData{Ty<:AbstractVector, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty  # may contain Missing values for posterior predictive inference
     D::Td
 end
 

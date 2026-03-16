@@ -90,6 +90,8 @@ struct PoissonPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 
@@ -118,18 +120,39 @@ function table_contribution(
     P = population(data)
     ρ = state.ρ_dict[sort(table)]
 
-    # Poisson log-likelihood: y_i * log(P_i * ρ) - P_i * ρ - log(y_i!)
-    # = y_i * log(P_i) + y_i * log(ρ) - P_i * ρ - log(y_i!)
-    S_k = sum(view(y, table))
-    sum_P = sum(view(P, table))
-    log_P_term = sum(y[i] * log(P[i]) for i in table if P[i] > 0)
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    isempty(obs_table) && return (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ
 
-    log_lik = log_P_term + S_k * log(ρ) - sum_P * ρ - sum(loggamma.(view(y, table) .+ 1))
+    S_k = sum(view(y, obs_table))
+    sum_P = sum(view(P, obs_table))
+    log_P_term = sum(y[i] * log(P[i]) for i in obs_table if P[i] > 0)
+
+    log_lik = log_P_term + S_k * log(ρ) - sum_P * ρ - sum(loggamma.(view(y, obs_table) .+ 1))
 
     # Gamma prior on ρ
     log_prior = (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ
 
     return log_lik + log_prior
+end
+
+"""
+    impute_y(::PoissonPopulationRates, i, state, data, priors)
+
+Draw a value for missing observation i from Poisson with current cluster rate.
+"""
+function impute_y(
+    ::PoissonPopulationRates,
+    i::Int,
+    state::PoissonPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesPriors
+)
+    P = population(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    ρ = state.ρ_dict[sort(table)]
+    P_i = P isa Real ? Float64(P) : Float64(P[i])
+    return rand(Poisson(P_i * ρ))
 end
 
 # ============================================================================
@@ -243,13 +266,15 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::PoissonPopulationRates, n_samples::Int, n::Int)
+function allocate_samples(::PoissonPopulationRates, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     PoissonPopulationRatesSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # ρ - stores cluster ρ per observation
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

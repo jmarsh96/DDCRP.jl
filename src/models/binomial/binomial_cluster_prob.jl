@@ -83,6 +83,8 @@ struct BinomialClusterProbSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 
@@ -168,9 +170,12 @@ function table_contribution(
     y = observations(data)
     N = trials(data)
     p = state.p_dict[sort(table)]
-    n_k = length(table)
-    y_table = view(y, table)
-    N_table = N isa Int ? fill(N, n_k) : view(N, table)
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    log_prior = (priors.p_a - 1) * log(p) + (priors.p_b - 1) * log(1 - p)
+    isempty(obs_table) && return log_prior
+    n_k = length(obs_table)
+    y_table = view(y, obs_table)
+    N_table = N isa Int ? fill(N, n_k) : view(N, obs_table)
 
     S_k = sum(y_table)
     F_k = sum(N_table) - S_k
@@ -178,9 +183,28 @@ function table_contribution(
     # Binomial likelihood + Beta prior
     log_binom = sum(logbinomial.(N_table, y_table))
     log_lik = S_k * log(p) + F_k * log(1 - p)
-    log_prior = (priors.p_a - 1) * log(p) + (priors.p_b - 1) * log(1 - p)
 
     return log_binom + log_lik + log_prior
+end
+
+"""
+    impute_y(::BinomialClusterProb, i, state, data, priors)
+
+Draw a value for missing observation i from Binomial with current cluster probability.
+"""
+function impute_y(
+    ::BinomialClusterProb,
+    i::Int,
+    state::BinomialClusterProbState,
+    data::CountDataWithTrials,
+    priors::BinomialClusterProbPriors
+)
+    N = trials(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    p = state.p_dict[sort(table)]
+    N_i = N isa Int ? N : N[i]
+    return rand(Binomial(N_i, p))
 end
 
 # ============================================================================
@@ -295,13 +319,15 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::BinomialClusterProb, n_samples::Int, n::Int)
+function allocate_samples(::BinomialClusterProb, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     BinomialClusterProbSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # p - stores cluster prob per observation
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

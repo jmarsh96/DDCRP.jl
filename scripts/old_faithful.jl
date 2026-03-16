@@ -281,6 +281,10 @@ savefig(p_cv_holl, "results/old_faithful/figures/cv_holl.png")
 
 ddcrp_params = DDCRPParams(α_opt, scale_opt)
 
+# DDCRPParams with Gamma(1, 0.01) priors on both α and s (joint inference run)
+# Gamma(shape=1, rate=0.01) → mean=100, very diffuse over positive reals
+ddcrp_params_infer = DDCRPParams(α_opt, scale_opt, 1.0, 0.01, 1.0, 0.01)
+
 # ============================================================================
 # 7. MCMC options
 # ============================================================================
@@ -293,6 +297,15 @@ opts = MCMCOptions(
     verbose           = true,
     infer_params      = Dict(:α => true, :c => true),
     prop_sds          = Dict(:α => 0.5),
+    track_diagnostics = true
+)
+
+opts_infer = MCMCOptions(
+    n_samples         = n_samples,
+    verbose           = true,
+    infer_params      = Dict(:α => true, :c => true,
+                             :α_ddcrp => true, :s_ddcrp => true),
+    prop_sds          = Dict(:α => 0.5, :s_ddcrp => 0.3),
     track_diagnostics = true
 )
 
@@ -310,6 +323,22 @@ samples, diagnostics = mcmc(
     opts               = opts
 )
 println("  Done. Total time: $(round(diagnostics.total_time, digits=1)) s")
+
+# ============================================================================
+# 8b. Run MCMC — joint inference of α_ddcrp and s_ddcrp
+# ============================================================================
+
+println("\nRunning RJMCMC with joint inference of α_ddcrp and s_ddcrp...")
+println("  Priors: α_ddcrp ~ Gamma(1, 0.01), s_ddcrp ~ Gamma(1, 0.01)")
+println("  Starting values: α=$(α_opt), scale=$(scale_opt)  (CV-optimal)")
+Random.seed!(456)
+samples_infer, diagnostics_infer = mcmc(
+    model, ContinuousData(y, D), ddcrp_params_infer, priors,
+    birth_proposal;
+    fixed_dim_proposal = fixed_dim_proposal,
+    opts               = opts_infer
+)
+println("  Done. Total time: $(round(diagnostics_infer.total_time, digits=1)) s")
 
 # ============================================================================
 # 9. Post-processing
@@ -356,6 +385,61 @@ map_iter    = argmax(lp_post)
 c_map       = c_post[map_iter, :]
 cluster_ids = compute_table_assignments(c_map)
 println("MAP clustering: $(length(unique(cluster_ids))) clusters")
+
+# ============================================================================
+# 9b. Post-processing — joint inference run
+# ============================================================================
+
+post_idx_infer = (n_burnin + 1):n_samples
+c_post_infer   = samples_infer.c[post_idx_infer, :]
+lp_post_infer  = samples_infer.logpost[post_idx_infer]
+k_post_infer   = calculate_n_clusters(c_post_infer)
+sim_infer      = compute_similarity_matrix(c_post_infer)
+
+α_ddcrp_post = samples_infer.α_ddcrp[post_idx_infer]
+s_ddcrp_post = samples_infer.s_ddcrp[post_idx_infer]
+
+ar_infer        = acceptance_rates(diagnostics_infer)
+ess_k_infer     = effective_sample_size(Float64.(k_post_infer))
+ess_lp_infer    = effective_sample_size(lp_post_infer)
+ess_α_ddcrp     = effective_sample_size(α_ddcrp_post)
+ess_s_ddcrp     = effective_sample_size(s_ddcrp_post)
+
+α_post_infer    = samples_infer.α[post_idx_infer, :]
+ess_α_vec_infer = [effective_sample_size(α_post_infer[:, i]) for i in 1:n]
+ess_α_med_infer = median(ess_α_vec_infer)
+ess_α_min_infer = minimum(ess_α_vec_infer)
+
+println()
+println("="^54)
+println("  Summary (joint inference) — post burn-in ($(length(post_idx_infer)) samples)")
+println("="^54)
+@printf "  %-32s  %s\n"   "Metric"                      "Value"
+println("-"^54)
+@printf "  %-32s  %6.3f\n" "Birth acceptance rate"       ar_infer.birth
+@printf "  %-32s  %6.3f\n" "Death acceptance rate"       ar_infer.death
+@printf "  %-32s  %6.3f\n" "Fixed-dim acceptance rate"   ar_infer.fixed
+println("-"^54)
+@printf "  %-32s  %6.1f\n" "ESS  K"                      ess_k_infer
+@printf "  %-32s  %6.1f\n" "ESS  log-posterior"          ess_lp_infer
+@printf "  %-32s  %6.1f\n" "ESS  α_ddcrp"                ess_α_ddcrp
+@printf "  %-32s  %6.1f\n" "ESS  s_ddcrp"                ess_s_ddcrp
+@printf "  %-32s  %6.1f\n" "ESS  α  (median over obs)"   ess_α_med_infer
+@printf "  %-32s  %6.1f\n" "ESS  α  (min over obs)"      ess_α_min_infer
+println("-"^54)
+@printf "  %-32s  %6.2f\n" "K  mean"                     mean(k_post_infer)
+@printf "  %-32s  %6d\n"   "K  median"                   Int(median(k_post_infer))
+@printf "  %-32s  %6d\n"   "K  mode"                     argmax(countmap(k_post_infer))
+@printf "  %-32s  %6.3f\n" "α_ddcrp  mean"               mean(α_ddcrp_post)
+@printf "  %-32s  %6.3f\n" "α_ddcrp  median"             median(α_ddcrp_post)
+@printf "  %-32s  %6.4f\n" "s_ddcrp  mean"               mean(s_ddcrp_post)
+@printf "  %-32s  %6.4f\n" "s_ddcrp  median"             median(s_ddcrp_post)
+println("="^54)
+
+map_iter_infer    = argmax(lp_post_infer)
+c_map_infer       = c_post_infer[map_iter_infer, :]
+cluster_ids_infer = compute_table_assignments(c_map_infer)
+println("MAP clustering (joint infer): $(length(unique(cluster_ids_infer))) clusters")
 
 # ============================================================================
 # 10. Figures
@@ -467,6 +551,58 @@ savefig(p_ppd, "results/old_faithful/figures/ppd_check.png")
 println("Figures saved to results/old_faithful/figures/")
 
 # ============================================================================
+# 10b. Figures — joint inference run
+# ============================================================================
+
+# 10b-i. 4-panel trace: K, log-posterior, α_ddcrp, s_ddcrp
+p_k_i  = plot(k_post_infer,
+    xlabel="Post burn-in iteration", ylabel="K",
+    title="Number of clusters (joint infer)", legend=false, linewidth=0.5)
+p_lp_i = plot(lp_post_infer,
+    xlabel="Post burn-in iteration", ylabel="Log-posterior",
+    title="Log-posterior trace (joint infer)", legend=false, linewidth=0.5)
+p_a_i  = plot(α_ddcrp_post,
+    xlabel="Post burn-in iteration", ylabel="α_ddcrp",
+    title="DDCRP concentration α", legend=false, linewidth=0.5)
+p_s_i  = plot(s_ddcrp_post,
+    xlabel="Post burn-in iteration", ylabel="s_ddcrp",
+    title="DDCRP decay scale s", legend=false, linewidth=0.5)
+p_traces_infer = plot(p_k_i, p_lp_i, p_a_i, p_s_i, layout=(2, 2), size=(1200, 800))
+savefig(p_traces_infer, "results/old_faithful/figures/infer_traces.png")
+
+# 10b-ii. Marginal posteriors of α_ddcrp and s_ddcrp
+p_hist_a = histogram(α_ddcrp_post, bins=50, normalize=:pdf,
+    xlabel="α_ddcrp", ylabel="Density",
+    title="Posterior: DDCRP concentration α\n(prior: Gamma(1, 0.01))",
+    legend=false, color=:steelblue, alpha=0.7)
+p_hist_s = histogram(s_ddcrp_post, bins=50, normalize=:pdf,
+    xlabel="s_ddcrp", ylabel="Density",
+    title="Posterior: DDCRP decay scale s\n(prior: Gamma(1, 0.01))",
+    legend=false, color=:salmon, alpha=0.7)
+p_hyperparams = plot(p_hist_a, p_hist_s, layout=(1, 2), size=(1000, 400))
+savefig(p_hyperparams, "results/old_faithful/figures/infer_hyperparams.png")
+
+# 10b-iii. Posterior K distribution
+cm_k_i    = countmap(k_post_infer)
+k_vals_i  = sort(collect(keys(cm_k_i)))
+k_probs_i = [cm_k_i[k] / length(k_post_infer) for k in k_vals_i]
+p_kdist_i = bar(k_vals_i, k_probs_i,
+    xlabel="K", ylabel="Posterior probability",
+    title="Posterior distribution of K (joint infer)",
+    legend=false, color=:steelblue)
+savefig(p_kdist_i, "results/old_faithful/figures/infer_k_distribution.png")
+
+# 10b-iv. MAP clustering scatter
+p_scatter_i = scatter(w, y,
+    group=cluster_ids_infer,
+    xlabel="Waiting time (min)", ylabel="Eruption duration (min)",
+    title="Old Faithful: MAP clustering (joint infer)",
+    markersize=4, palette=:tab10, legend=:topleft)
+savefig(p_scatter_i, "results/old_faithful/figures/infer_clustering_scatter.png")
+
+println("Joint-inference figures saved to results/old_faithful/figures/infer_*")
+
+# ============================================================================
 # 11. Summary metrics CSV
 # ============================================================================
 
@@ -504,6 +640,53 @@ metrics = DataFrame(
 )
 CSV.write("results/old_faithful/summary_metrics.csv", metrics)
 println("Summary metrics saved to results/old_faithful/summary_metrics.csv")
+
+metrics_infer = DataFrame(
+    metric = [
+        "Birth acceptance rate",
+        "Death acceptance rate",
+        "Fixed-dim acceptance rate",
+        "ESS (K)",
+        "ESS (log-posterior)",
+        "ESS (α_ddcrp)",
+        "ESS (s_ddcrp)",
+        "ESS (α, median over obs)",
+        "ESS (α, min over obs)",
+        "K mean",
+        "K median",
+        "K mode",
+        "α_ddcrp mean",
+        "α_ddcrp median",
+        "s_ddcrp mean",
+        "s_ddcrp median",
+        "Total time (s)",
+        "Starting α",
+        "Starting scale",
+    ],
+    value = [
+        round(ar_infer.birth,               digits=3),
+        round(ar_infer.death,               digits=3),
+        round(ar_infer.fixed,               digits=3),
+        round(ess_k_infer,                  digits=1),
+        round(ess_lp_infer,                 digits=1),
+        round(ess_α_ddcrp,                  digits=1),
+        round(ess_s_ddcrp,                  digits=1),
+        round(ess_α_med_infer,              digits=1),
+        round(ess_α_min_infer,              digits=1),
+        round(mean(k_post_infer),           digits=2),
+        Float64(Int(median(k_post_infer))),
+        Float64(argmax(countmap(k_post_infer))),
+        round(mean(α_ddcrp_post),           digits=4),
+        round(median(α_ddcrp_post),         digits=4),
+        round(mean(s_ddcrp_post),           digits=4),
+        round(median(s_ddcrp_post),         digits=4),
+        round(diagnostics_infer.total_time, digits=1),
+        α_opt,
+        scale_opt,
+    ]
+)
+CSV.write("results/old_faithful/summary_metrics_infer.csv", metrics_infer)
+println("Joint-inference metrics saved to results/old_faithful/summary_metrics_infer.csv")
 
 # ============================================================================
 # 12. LaTeX table output

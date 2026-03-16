@@ -79,6 +79,8 @@ struct BinomialClusterProbMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -100,11 +102,13 @@ function table_contribution(
 )
     y = observations(data)
     N = trials(data)
-    n_k = length(table)
-    y_table = view(y, table)
+    obs_table = any(ismissing, y) ? [j for j in table if !ismissing(y[j])] : table
+    isempty(obs_table) && return 0.0
+    n_k = length(obs_table)
+    y_table = view(y, obs_table)
 
     # Handle scalar or vector N
-    N_table = N isa Int ? fill(N, n_k) : view(N, table)
+    N_table = N isa Int ? fill(N, n_k) : view(N, obs_table)
 
     S_k = sum(y_table)                    # Total successes
     F_k = sum(N_table) - S_k              # Total failures
@@ -116,6 +120,32 @@ function table_contribution(
                      logbeta(priors.p_a, priors.p_b)
 
     return log_binom + log_beta_ratio
+end
+
+"""
+    impute_y(::BinomialClusterProbMarg, i, state, data, priors)
+
+Draw a value for missing observation i from the cluster posterior predictive.
+Samples p_k from its Beta posterior given observed members, then y[i] ~ Binomial(N[i], p_k).
+"""
+function impute_y(
+    ::BinomialClusterProbMarg,
+    i::Int,
+    state::BinomialClusterProbMargState,
+    data::CountDataWithTrials,
+    priors::BinomialClusterProbMargPriors
+)
+    y = observations(data)
+    N = trials(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    obs_table = [j for j in table if j != i && !ismissing(y[j])]
+    N_obs = N isa Int ? fill(N, length(obs_table)) : [N[j] for j in obs_table]
+    S_k = isempty(obs_table) ? 0 : sum(y[j] for j in obs_table)
+    F_k = isempty(obs_table) ? 0 : sum(N_obs) - S_k
+    p_k = rand(Beta(priors.p_a + S_k, priors.p_b + F_k))
+    N_i = N isa Int ? N : N[i]
+    return rand(Binomial(N_i, p_k))
 end
 
 # ============================================================================
@@ -190,12 +220,14 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::BinomialClusterProbMarg, n_samples::Int, n::Int)
+function allocate_samples(::BinomialClusterProbMarg, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     BinomialClusterProbMargSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

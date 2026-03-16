@@ -98,6 +98,8 @@ struct NBMeanDispersionGlobalRSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -128,13 +130,37 @@ function table_contribution(
     m = state.m_dict[sort(table)]
     r = state.r
 
-    # NegBin log-likelihood for all observations in table
-    log_lik = sum(negbin_logpdf(y[i], m, r) for i in table)
+    obs_table = any(ismissing, y) ? [i for i in table if !ismissing(y[i])] : table
 
     # InverseGamma prior on m
     log_prior_m = logpdf(InverseGamma(priors.m_a, priors.m_b), m)
+    isempty(obs_table) && return log_prior_m
+
+    # NegBin log-likelihood for observed observations in table
+    log_lik = sum(negbin_logpdf(y[i], m, r) for i in obs_table)
 
     return log_lik + log_prior_m
+end
+
+"""
+    impute_y(::NBMeanDispersionGlobalR, i, state, data, priors)
+
+Draw a value for missing observation i from NegBin(r, r/(r+m)) using the
+current cluster mean and global dispersion.
+"""
+function impute_y(
+    ::NBMeanDispersionGlobalR,
+    i::Int,
+    state::NBMeanDispersionGlobalRState,
+    data::CountData,
+    priors::NBMeanDispersionGlobalRPriors
+)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    m = state.m_dict[sort(table)]
+    r = state.r
+    p = r / (r + m)
+    return rand(NegativeBinomial(r, p))
 end
 
 # ============================================================================
@@ -287,8 +313,9 @@ function initialise_state(
     tables = table_vector(c)
     m_dict = Dict{Vector{Int}, Float64}()
     for table in tables
-        # Initialize m at empirical mean of y in cluster
-        m_dict[sort(table)] = max(mean(view(y, table)), 0.1)
+        # Initialize m at empirical mean of y in cluster (skip missing)
+        obs_vals = collect(skipmissing(view(y, table)))
+        m_dict[sort(table)] = isempty(obs_vals) ? max(priors.m_a / priors.m_b, 0.1) : max(mean(obs_vals), 0.1)
     end
     r = 1.0
     return NBMeanDispersionGlobalRState(c, m_dict, r)
@@ -303,7 +330,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBMeanDispersionGlobalR, n_samples::Int, n::Int)
+function allocate_samples(::NBMeanDispersionGlobalR, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBMeanDispersionGlobalRSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples),           # r
@@ -311,6 +338,8 @@ function allocate_samples(::NBMeanDispersionGlobalR, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 

@@ -118,6 +118,8 @@ struct NBMeanDispersionPopulationSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 # ============================================================================
@@ -215,13 +217,40 @@ function table_contribution(
     γ = state.γ_dict[sort(table)]
     r = state.r
 
-    # NegBin log-likelihood: y_i ~ NegBin(r, r/(r + P_i * γ))
-    log_lik = sum(negbin_logpdf(y[i], P[i] * γ, r) for i in table)
+    obs_table = any(ismissing, y) ? [i for i in table if !ismissing(y[i])] : table
 
     # InverseGamma prior on γ_k
     log_prior_γ = logpdf(InverseGamma(priors.γ_a, priors.γ_b), γ)
+    isempty(obs_table) && return log_prior_γ
+
+    # NegBin log-likelihood: y_i ~ NegBin(r, r/(r + P_i * γ))
+    log_lik = sum(negbin_logpdf(y[i], P[i] * γ, r) for i in obs_table)
 
     return log_lik + log_prior_γ
+end
+
+"""
+    impute_y(::NBMeanDispersionPopulation, i, state, data, priors)
+
+Draw a value for missing observation i from NegBin(r, r/(r+P_i*γ_k)) using the
+current cluster rate and global dispersion.
+"""
+function impute_y(
+    ::NBMeanDispersionPopulation,
+    i::Int,
+    state::NBMeanDispersionPopulationState,
+    data::CountDataWithPopulation,
+    priors::NBMeanDispersionPopulationPriors
+)
+    P = population(data)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    γ = state.γ_dict[sort(table)]
+    r = state.r
+    P_i = P isa Int ? Float64(P) : Float64(P[i])
+    m_i = P_i * γ
+    p = r / (r + m_i)
+    return rand(NegativeBinomial(r, p))
 end
 
 # ============================================================================
@@ -394,7 +423,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::NBMeanDispersionPopulation, n_samples::Int, n::Int)
+function allocate_samples(::NBMeanDispersionPopulation, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     NBMeanDispersionPopulationSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # γ (per observation)
@@ -402,6 +431,8 @@ function allocate_samples(::NBMeanDispersionPopulation, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 
