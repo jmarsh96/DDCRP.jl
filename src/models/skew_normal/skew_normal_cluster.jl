@@ -123,6 +123,8 @@ struct SkewNormalClusterSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y_imp::Matrix{Float64}
+    missing_indices::Vector{Int}
 end
 
 
@@ -666,8 +668,7 @@ function table_contribution(
     ω = state.ω_dict[key]
     α = state.α_dict[key]
 
-    # Skew normal log-likelihood for all observations in table
-    log_lik = sum(skewnormal_logpdf(y[i], ξ, ω, α) for i in table)
+    obs_table = any(ismissing, y) ? [i for i in table if !ismissing(y[i])] : table
 
     # Priors
     log_prior_ξ = logpdf(Normal(priors.ξ_μ, priors.ξ_σ), ξ)
@@ -676,8 +677,39 @@ function table_contribution(
     log_prior_ω² = logpdf(InverseGamma(priors.ω_a, priors.ω_b), ω^2)
     log_jacobian_ω = log(2 * ω)
     log_prior_α = logpdf(Normal(priors.α_μ, priors.α_σ), α)
+    log_priors = log_prior_ξ + log_prior_ω² + log_jacobian_ω + log_prior_α
+    isempty(obs_table) && return log_priors
 
-    return log_lik + log_prior_ξ + log_prior_ω² + log_jacobian_ω + log_prior_α
+    # Skew normal log-likelihood for observed observations in table
+    log_lik = sum(skewnormal_logpdf(y[i], ξ, ω, α) for i in obs_table)
+
+    return log_lik + log_priors
+end
+
+"""
+    impute_y(::SkewNormalCluster, i, state, data, priors)
+
+Draw a value for missing observation i from the skew-normal distribution of its
+cluster, using the data augmentation representation. Also updates state.h[i].
+"""
+function impute_y(
+    ::SkewNormalCluster,
+    i::Int,
+    state::SkewNormalClusterState,
+    data::ContinuousData,
+    priors::SkewNormalClusterPriors
+)
+    tables = table_vector(state.c)
+    table = tables[findfirst(t -> i in t, tables)]
+    key = sort(table)
+    ξ = state.ξ_dict[key]
+    ω = state.ω_dict[key]
+    α = state.α_dict[key]
+    δ = α / sqrt(1 + α^2)
+    h_i = abs(randn())
+    ε_i = randn()
+    state.h[i] = h_i
+    return ξ + ω * (δ * h_i + sqrt(1 - δ^2) * ε_i)
 end
 
 # ============================================================================
@@ -1012,7 +1044,7 @@ end
 
 Allocate storage for MCMC samples.
 """
-function allocate_samples(::SkewNormalCluster, n_samples::Int, n::Int)
+function allocate_samples(::SkewNormalCluster, n_samples::Int, n::Int, missing_indices::Vector{Int} = Int[])
     SkewNormalClusterSamples(
         zeros(Int, n_samples, n),   # c
         zeros(n_samples, n),        # h
@@ -1022,6 +1054,8 @@ function allocate_samples(::SkewNormalCluster, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        Matrix{Float64}(undef, n_samples, length(missing_indices)),  # y_imp
+        missing_indices,            # missing_indices
     )
 end
 
