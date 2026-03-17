@@ -1,6 +1,6 @@
 name = "DDCRP"
 uuid = "dbeaf2d9-7096-46dc-b5bb-37e0f5c80ff6"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Joseph Marsh"]
 
 [deps]
