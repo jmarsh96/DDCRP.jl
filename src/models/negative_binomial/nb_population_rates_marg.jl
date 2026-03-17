@@ -148,8 +148,12 @@ function table_contribution(
     λ_k = view(state.λ, table)
     Λ_k = sum(λ_k)
 
-    poisson_terms = sum(Float64(y_k[j]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
-                        loggamma(Float64(y_k[j]) + 1) for j in 1:n_k)
+    poisson_terms = sum(
+        ismissing(y_k[j]) ? 0.0 :
+        Float64(y_k[j]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
+        loggamma(Float64(y_k[j]) + 1)
+        for j in 1:n_k
+    )
     gamma_norm    = n_k * (r * log(r) - loggamma(r))
     lambda_power  = (r - 1) * sum(log(λ_k[j]) for j in 1:n_k)
     ig_integral   = loggamma(n_k * r + priors.γ_a) - (n_k * r + priors.γ_a) * log(r * Λ_k + priors.γ_b)
@@ -216,7 +220,10 @@ function update_λ!(
             Λ_new = Λ_k - λ_old + λ_can
 
             # O(1) delta in TC: Poisson + Gamma power + IG integral terms
-            ΔTC = Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old) +
+            # Missing observations contribute no data likelihood term
+            y_contrib = ismissing(y_k[j]) ? 0.0 :
+                        Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old)
+            ΔTC = y_contrib +
                   (r - 1) * log(λ_can / λ_old) -
                   (n_k * r + priors.γ_a) * (log(r * Λ_new + priors.γ_b) -
                                              log(r * Λ_k  + priors.γ_b))
@@ -310,6 +317,31 @@ function initialise_state(
     λ0    = [ismissing(y[i]) ? 0.01 : max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
     return NBPopulationRatesMargState(c, λ0, 1.0)
+end
+
+# ============================================================================
+# Imputation
+# ============================================================================
+
+"""
+    impute_y(::NBPopulationRatesMarg, i, state, data, priors)
+
+Draw a value for missing observation i from NegBin(r, r/(r + P_i*λ_i)) using
+the current individual rate and global dispersion.
+"""
+function impute_y(
+    ::NBPopulationRatesMarg,
+    i::Int,
+    state::NBPopulationRatesMargState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesMargPriors
+)
+    P = population(data)
+    P_i = P isa Int ? Float64(P) : Float64(P[i])
+    r = state.r
+    μ = P_i * state.λ[i]
+    p = r / (r + μ)
+    return rand(NegativeBinomial(r, p))
 end
 
 # ============================================================================
