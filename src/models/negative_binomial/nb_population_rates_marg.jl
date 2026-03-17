@@ -307,7 +307,7 @@ function initialise_state(
     c   = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
 
     P_vec = P isa Int ? fill(Float64(P), n) : Float64.(P)
-    λ0    = [max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
+    λ0    = [ismissing(y[i]) ? 0.01 : max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
     return NBPopulationRatesMargState(c, λ0, 1.0)
 end
