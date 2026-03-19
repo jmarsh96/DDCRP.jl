@@ -114,6 +114,7 @@ function update_c_i!(
     return (:gibbs, new_assignment, true)
 end
 
+# standard RJMCMC update
 function update_c_i!(
     model::LikelihoodModel,
     i::Int,
@@ -122,7 +123,8 @@ function update_c_i!(
     priors::AbstractPriors,
     log_DDCRP::AbstractMatrix,
     proposal::BirthProposal,
-    fixed_dim_proposal::FixedDimensionProposal
+    fixed_dim_proposal::FixedDimensionProposal,
+    ::StandardUpdate
 )
     n = length(state.c)
     j_old = state.c[i]
@@ -282,6 +284,168 @@ function update_c_i!(
             keys_to_delete = isempty(new_table_depleted) ?
                 [new_table_augmented] : [new_table_depleted, new_table_augmented]
             restore_entries!(dicts, saved, keys_to_delete)
+            return (:fixed, j_star, false)
+        end
+    end
+end
+
+
+# RJMCMC update for missing observations
+# j_star is proposed from the DDCRP prior, so the proposal ratio cancels the
+# ddcrp_delta target term — only cluster parameter proposals require MH.
+# After each acceptance/rejection the imputed y_i is refreshed.
+function update_c_i!(
+    model::LikelihoodModel,
+    i::Int,
+    state::AbstractMCMCState,
+    data::AbstractObservedData,
+    priors::AbstractPriors,
+    log_DDCRP::AbstractMatrix,
+    proposal::BirthProposal,
+    fixed_dim_proposal::FixedDimensionProposal,
+    ::MissingUpdate
+)
+    n = length(state.c)
+    j_old = state.c[i]
+
+    dicts = cluster_param_dicts(state)
+    primary_dict = first(dicts)
+    table_Si = find_table_for_customer(i, primary_dict)
+    S_i = get_moving_set(i, state.c, table_Si)
+
+    # Propose from DDCRP prior; cancels the ddcrp target term in log_α
+    log_probs = [log_DDCRP[i, j] for j in 1:n]
+    probs = exp.(log_probs .- maximum(log_probs))
+    j_star = sample(1:n, Weights(probs))
+
+    j_old_in_Si = j_old in S_i
+    j_star_in_Si = j_star in S_i
+
+    if !j_old_in_Si && j_star_in_Si
+        # ===== BIRTH MOVE =====
+        params_new, log_q_forward = sample_birth_params(model, proposal, S_i, state, data, priors)
+
+        table_l = sorted_setdiff(table_Si, S_i)
+
+        old_contrib = table_contribution(model, table_Si, state, data, priors)
+
+        saved = save_entries(dicts, [table_Si])
+        old_table_Si_vals = map(d -> d[table_Si], dicts)
+
+        state.c[i] = j_star
+        for k in keys(dicts)
+            dicts[k][S_i] = params_new[k]
+            if !isempty(table_l)
+                dicts[k][table_l] = old_table_Si_vals[k]
+            end
+            delete!(dicts[k], table_Si)
+        end
+
+        new_contrib = table_contribution(model, S_i, state, data, priors)
+        if !isempty(table_l)
+            new_contrib += table_contribution(model, table_l, state, data, priors)
+        end
+
+        # No ddcrp_delta: proposal from prior cancels target contribution
+        log_α = (new_contrib - old_contrib) - log_q_forward
+
+        if log(rand()) < log_α
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:birth, j_star, true)
+        else
+            state.c[i] = j_old
+            keys_to_delete = isempty(table_l) ? [S_i] : [S_i, table_l]
+            restore_entries!(dicts, saved, keys_to_delete)
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:birth, j_star, false)
+        end
+
+    elseif j_old_in_Si && !j_star_in_Si
+        # ===== DEATH MOVE =====
+        table_target = find_table_for_customer(j_star, primary_dict)
+        merged_table = sorted_merge(table_Si, table_target)
+
+        params_old = map(d -> d[table_Si], dicts)
+        log_q_reverse = birth_params_logpdf(model, proposal, params_old, S_i, state, data, priors)
+
+        old_contrib = table_contribution(model, table_Si, state, data, priors) +
+                      table_contribution(model, table_target, state, data, priors)
+
+        saved = save_entries(dicts, [table_Si, table_target])
+        target_vals = map(d -> d[table_target], dicts)
+
+        state.c[i] = j_star
+        for k in keys(dicts)
+            dicts[k][merged_table] = target_vals[k]
+            delete!(dicts[k], table_Si)
+            delete!(dicts[k], table_target)
+        end
+
+        new_contrib = table_contribution(model, merged_table, state, data, priors)
+
+        # No ddcrp_delta: proposal from prior cancels target contribution
+        log_α = (new_contrib - old_contrib) + log_q_reverse
+
+        if log(rand()) < log_α
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:death, j_star, true)
+        else
+            state.c[i] = j_old
+            restore_entries!(dicts, saved, [merged_table])
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:death, j_star, false)
+        end
+
+    else
+        # ===== FIXED DIMENSION MOVE =====
+        table_old_target = find_table_for_customer(j_old, primary_dict)
+        table_new_target = find_table_for_customer(j_star, primary_dict)
+
+        if table_old_target == table_new_target
+            # Same table — no param changes, ddcrp cancels: always accept
+            state.c[i] = j_star
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:fixed, j_star, true)
+        end
+
+        new_table_depleted = sorted_setdiff(table_old_target, S_i)
+        new_table_augmented = sorted_merge(table_new_target, S_i)
+
+        params_depl, params_aug, lpr = fixed_dim_params(
+            model, fixed_dim_proposal, S_i, table_old_target, table_new_target, state, data, priors)
+
+        old_contrib = table_contribution(model, table_old_target, state, data, priors) +
+                      table_contribution(model, table_new_target, state, data, priors)
+
+        saved = save_entries(dicts, [table_old_target, table_new_target])
+
+        state.c[i] = j_star
+        for k in keys(dicts)
+            if !isempty(new_table_depleted)
+                dicts[k][new_table_depleted] = params_depl[k]
+            end
+            dicts[k][new_table_augmented] = params_aug[k]
+            delete!(dicts[k], table_old_target)
+            delete!(dicts[k], table_new_target)
+        end
+
+        new_contrib = table_contribution(model, new_table_augmented, state, data, priors)
+        if !isempty(new_table_depleted)
+            new_contrib += table_contribution(model, new_table_depleted, state, data, priors)
+        end
+
+        # No ddcrp_delta: proposal from prior cancels target contribution
+        log_α = (new_contrib - old_contrib) + lpr
+
+        if log(rand()) < log_α
+            data.y[i] = impute_y(model, state, data, priors, i)
+            return (:fixed, j_star, true)
+        else
+            state.c[i] = j_old
+            keys_to_delete = isempty(new_table_depleted) ?
+                [new_table_augmented] : [new_table_depleted, new_table_augmented]
+            restore_entries!(dicts, saved, keys_to_delete)
+            data.y[i] = impute_y(model, state, data, priors, i)
             return (:fixed, j_star, false)
         end
     end
