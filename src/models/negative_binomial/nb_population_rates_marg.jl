@@ -308,19 +308,21 @@ function impute_y(
     P   = population(data)
     P_i = P isa Int ? Float64(P) : Float64(P[i])
 
+    # Find the cluster i now belongs to (c[i] was just updated)
     tables = table_vector(state.c)
     table  = tables[findfirst(t -> i in t, tables)]
     others = filter(j -> j != i, table)
 
+    # Sample γ_k: posterior given cluster members' λ (or prior if singleton)
     if isempty(others)
         γ_k = rand(InverseGamma(priors.γ_a, priors.γ_b))
     else
         Λ_others = sum(state.λ[j] for j in others)
-        α_post   = length(others) * r + priors.γ_a
-        β_post   = r * Λ_others + priors.γ_b
-        γ_k = rand(InverseGamma(α_post, β_post))
+        γ_k = rand(InverseGamma(length(others) * r + priors.γ_a,
+                                r * Λ_others + priors.γ_b))
     end
 
+    # Discard the stale λ_i (anchored to old cluster); resample from new cluster
     λ_new = rand(Gamma(r, γ_k / r))
     state.λ[i] = λ_new
 

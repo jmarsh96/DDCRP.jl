@@ -70,6 +70,7 @@ mutable struct NBPopulationRatesState{T<:Real} <: AbstractMCMCState{T}
     λ::Vector{T}
     γ_dict::Dict{Vector{Int}, T}
     r::T
+    y::Vector{Int}
 end
 
 # ============================================================================
@@ -118,6 +119,7 @@ struct NBPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y::Matrix{Int}
 end
 
 requires_population(::NBPopulationRates) = true
@@ -336,7 +338,7 @@ function update_r!(
     r_can = rand(Normal(state.r, prop_sd))
     r_can <= 0 && return
 
-    state_can = NBPopulationRatesState(state.c, state.λ, state.γ_dict, r_can)
+    state_can = NBPopulationRatesState(state.c, state.λ, state.γ_dict, r_can, state.y)
 
     logpost_current   = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1 / priors.r_b), state.r)
@@ -415,7 +417,7 @@ function initialise_state(
         γ_dict[key] = rand(InverseGamma(α_post, β_post))
     end
 
-    return NBPopulationRatesState(c, λ0, γ_dict, r0)
+    return NBPopulationRatesState(c, λ0, γ_dict, r0, observations(data))
 end
 
 # ============================================================================
@@ -436,6 +438,7 @@ function allocate_samples(::NBPopulationRates, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        zeros(Int, n_samples, n),   # y
     )
 end
 
@@ -453,9 +456,56 @@ function extract_samples!(
     samples.c[iter, :]  = state.c
     samples.λ[iter, :]  = state.λ
     samples.r[iter]     = state.r
+    samples.y[iter, :]  = state.y
     for (table, γ_val) in state.γ_dict
         for i in table
             samples.γ[iter, i] = γ_val
         end
     end
+end
+
+# ============================================================================
+# Missing Data Imputation
+# ============================================================================
+
+"""
+    impute_y(::NBPopulationRates, state, data, priors, i)
+
+Impute a missing count y_i. Resamples γ_k from its conditional posterior given
+the OTHER cluster members' λ values (excluding i), so that the stale λ_i from
+update_λ_gibbs! does not bias the result. Then draws λ_i fresh and y_i ~ Poisson.
+
+This mirrors NBPopulationRatesMarg.impute_y exactly: prior for singletons,
+conjugate posterior for non-singletons. Also refreshes γ_dict[table] so the
+state remains consistent.
+"""
+function impute_y(
+    ::NBPopulationRates,
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors,
+    i::Int
+)
+    r   = state.r
+    P   = population(data)
+    P_i = P isa Int ? Float64(P) : Float64(P[i])
+
+    tables = table_vector(state.c)
+    table  = tables[findfirst(t -> i in t, tables)]
+    others = filter(j -> j != i, table)
+
+    if isempty(others)
+        γ_k = rand(InverseGamma(priors.γ_a, priors.γ_b))
+    else
+        Λ_others = sum(state.λ[j] for j in others)
+        γ_k = rand(InverseGamma(length(others) * r + priors.γ_a,
+                                r * Λ_others + priors.γ_b))
+    end
+
+    state.γ_dict[sort(table)] = γ_k
+
+    λ_new = rand(Gamma(r, γ_k / r))
+    state.λ[i] = λ_new
+
+    return rand(Poisson(P_i * λ_new))
 end
