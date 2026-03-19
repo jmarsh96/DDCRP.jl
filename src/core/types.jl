@@ -396,8 +396,11 @@ Returns true if the model requires data with population/exposure offsets (P).
 """
 requires_population(::LikelihoodModel) = false
 
-# ============================================================================
-# Legacy Strategy Types - REMOVED
-# ============================================================================
-# Legacy InferenceStrategy types have been removed.
-# Use model types directly with MCMCOptions to configure inference.
+
+
+
+ # Types for missing data handling when updating c
+abstract type CustomerUpdate end
+
+struct StandardUpdate <: CustomerUpdate end
+struct MissingUpdate <: CustomerUpdate end

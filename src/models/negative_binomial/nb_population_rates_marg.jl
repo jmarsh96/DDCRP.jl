@@ -65,6 +65,7 @@ mutable struct NBPopulationRatesMargState{T<:Real} <: AbstractMCMCState{T}
     c::Vector{Int}
     λ::Vector{T}
     r::T
+    y::Vector{Int}  # For imputed counts; not part of the original state but needed for missing data handling
 end
 
 # ============================================================================
@@ -111,6 +112,7 @@ struct NBPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y::Matrix{Int}
 end
 
 requires_population(::NBPopulationRatesMarg) = true
@@ -246,7 +248,7 @@ function update_r!(
     r_can = rand(Normal(state.r, prop_sd))
     r_can <= 0 && return
 
-    state_can = NBPopulationRatesMargState(state.c, state.λ, r_can)
+    state_can = NBPopulationRatesMargState(state.c, state.λ, r_can, state.y)
 
     logpost_current   = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1 / priors.r_b), state.r)
@@ -282,6 +284,50 @@ function update_params!(
 end
 
 # ============================================================================
+# Missing Data Imputation
+# ============================================================================
+
+"""
+    impute_y(::NBPopulationRatesMarg, state, data, priors, i)
+
+Impute a missing count y_i by drawing from the posterior/prior predictive,
+integrating over γ_k. Also updates state.λ[i] for consistency.
+
+- Cluster with other members: sample γ_k from its conjugate posterior given
+  those members' λ values, then draw λ_i and y_i.
+- Singleton cluster: sample γ_k from the prior, then draw λ_i and y_i.
+"""
+function impute_y(
+    ::NBPopulationRatesMarg,
+    state::NBPopulationRatesMargState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesMargPriors,
+    i::Int
+)
+    r   = state.r
+    P   = population(data)
+    P_i = P isa Int ? Float64(P) : Float64(P[i])
+
+    tables = table_vector(state.c)
+    table  = tables[findfirst(t -> i in t, tables)]
+    others = filter(j -> j != i, table)
+
+    if isempty(others)
+        γ_k = rand(InverseGamma(priors.γ_a, priors.γ_b))
+    else
+        Λ_others = sum(state.λ[j] for j in others)
+        α_post   = length(others) * r + priors.γ_a
+        β_post   = r * Λ_others + priors.γ_b
+        γ_k = rand(InverseGamma(α_post, β_post))
+    end
+
+    λ_new = rand(Gamma(r, γ_k / r))
+    state.λ[i] = λ_new
+
+    return rand(Poisson(P_i * λ_new))
+end
+
+# ============================================================================
 # State Initialization
 # ============================================================================
 
@@ -307,7 +353,7 @@ function initialise_state(
     P_vec = P isa Int ? fill(Float64(P), n) : Float64.(P)
     λ0    = [max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
-    return NBPopulationRatesMargState(c, λ0, 1.0)
+    return NBPopulationRatesMargState(c, λ0, 1.0, y)
 end
 
 # ============================================================================
@@ -327,6 +373,7 @@ function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        zeros(Int, n_samples, n)   # y
     )
 end
 
@@ -344,4 +391,5 @@ function extract_samples!(
     samples.c[iter, :]  = state.c
     samples.λ[iter, :]  = state.λ
     samples.r[iter]     = state.r
+    samples.y[iter, :]  = state.y
 end
