@@ -203,6 +203,201 @@ function birth_params_logpdf(
     return logpdf(Q, params_old.γ)
 end
 
+# --- FixedDistributionProposal ---
+# Samples γ_new from a user-specified fixed distribution Q = prop.dists[1],
+# e.g. FixedDistributionProposal([Exponential(0.01)]).
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::FixedDistributionProposal,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    Q     = prop.dists[1]
+    γ_new = rand(Q)
+    return (γ = γ_new,), logpdf(Q, γ_new)
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::FixedDistributionProposal,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    return logpdf(prop.dists[1], params_old.γ)
+end
+
+# --- LogNormalMomentMatch ---
+# Proposes γ on the log scale: log(γ) ~ Normal(log(mean(λ_Si)), prop.σ[1]).
+# Since E[λ_i | γ_k] = γ_k, the mean of λ values in S_i is a natural moment estimate.
+# Falls back to prior mean for empty S_i.
+# Jacobian: logpdf_γ = logpdf_log_γ - log(γ).
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::LogNormalMomentMatch,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    λ_center = isempty(S_i) ? priors.γ_b / max(priors.γ_a - 1.0, 0.01) :
+                              mean(state.λ[j] for j in S_i)
+    μ_log    = log(max(λ_center, 1e-8))
+    Q        = Normal(μ_log, prop.σ[1])
+    log_γ    = rand(Q)
+    γ_new    = exp(log_γ)
+    return (γ = γ_new,), logpdf(Q, log_γ) - log_γ
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::LogNormalMomentMatch,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    params_old.γ <= 0 && return -Inf
+    λ_center = isempty(S_i) ? priors.γ_b / max(priors.γ_a - 1.0, 0.01) :
+                              mean(state.λ[j] for j in S_i)
+    μ_log = log(max(λ_center, 1e-8))
+    Q     = Normal(μ_log, prop.σ[1])
+    return logpdf(Q, log(params_old.γ)) - log(params_old.γ)
+end
+
+# --- InverseGammaMomentMatch ---
+# Matches an InverseGamma to the empirical moments of existing γ_k values across
+# all current clusters. Falls back to the prior when fewer than prop.min_size
+# clusters exist or moment matching is degenerate.
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::InverseGammaMomentMatch,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    γ_vals = collect(values(state.γ_dict))
+    if length(γ_vals) >= prop.min_size
+        μ_γ  = mean(γ_vals)
+        σ²_γ = var(γ_vals)
+        if σ²_γ > 0 && μ_γ > 0
+            α_ig = 2.0 + μ_γ^2 / σ²_γ
+            β_ig = μ_γ * (α_ig - 1.0)
+            Q    = InverseGamma(α_ig, β_ig)
+            γ_new = rand(Q)
+            return (γ = γ_new,), logpdf(Q, γ_new)
+        end
+    end
+    Q = InverseGamma(priors.γ_a, priors.γ_b)
+    γ_new = rand(Q)
+    return (γ = γ_new,), logpdf(Q, γ_new)
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::InverseGammaMomentMatch,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    γ_vals = collect(values(state.γ_dict))
+    if length(γ_vals) >= prop.min_size
+        μ_γ  = mean(γ_vals)
+        σ²_γ = var(γ_vals)
+        if σ²_γ > 0 && μ_γ > 0
+            α_ig = 2.0 + μ_γ^2 / σ²_γ
+            β_ig = μ_γ * (α_ig - 1.0)
+            return logpdf(InverseGamma(α_ig, β_ig), params_old.γ)
+        end
+    end
+    return logpdf(InverseGamma(priors.γ_a, priors.γ_b), params_old.γ)
+end
+
+# ============================================================================
+# Per-parameter dispatch — required by Resample fixed-dim proposal
+# ============================================================================
+# sample_birth_param / birth_param_logpdf with Val{:γ} delegate to the
+# corresponding plural sample_birth_params / birth_params_logpdf, enabling
+# Resample(proposal) as a fixed-dimension proposal for any supported birth proposal.
+
+function sample_birth_param(
+    model::NBPopulationRates,
+    ::Val{:γ},
+    proposal::BirthProposal,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    params, lq = sample_birth_params(model, proposal, S_i, state, data, priors)
+    return params.γ, lq
+end
+
+function birth_param_logpdf(
+    model::NBPopulationRates,
+    ::Val{:γ},
+    proposal::BirthProposal,
+    γ_val,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    return birth_params_logpdf(model, proposal, (γ = γ_val,), S_i, state, data, priors)
+end
+
+# ============================================================================
+# Fixed-dimension proposals
+# ============================================================================
+
+# WeightedMean override: use mean(λ_Si) rather than mean(y_Si) as the summary
+# statistic for γ, since E[λ_i | γ_k, r] = γ_k makes the λ mean the natural
+# estimate of the cluster rate. The deterministic bijection and Jacobian
+# follow the same derivation as the generic WeightedMean.
+function fixed_dim_param(
+    ::NBPopulationRates,
+    ::Val{:γ},
+    ::WeightedMean,
+    S_i::Vector{Int},
+    table_depl::Vector{Int},
+    table_aug::Vector{Int},
+    state::NBPopulationRatesState,
+    ::CountDataWithPopulation,
+    ::NBPopulationRatesPriors
+)
+    γ_depl  = state.γ_dict[table_depl]
+    γ_aug   = state.γ_dict[table_aug]
+    λ̄_Si    = mean(state.λ[j] for j in S_i)
+    n_depl  = length(table_depl)
+    n_aug   = length(table_aug)
+    n_Si    = length(S_i)
+
+    γ_aug_new   = (n_aug * γ_aug + n_Si * λ̄_Si) / (n_aug + n_Si)
+    log_jac_aug = log(n_aug) - log(n_aug + n_Si)
+
+    n_remaining = n_depl - n_Si
+    if n_remaining > 0
+        γ_depl_new = (n_depl * γ_depl - n_Si * λ̄_Si) / n_remaining
+        if γ_depl_new <= 0
+            return γ_depl_new, γ_aug_new, -Inf
+        end
+        lpr = log_jac_aug + log(n_depl) - log(n_remaining)
+    else
+        γ_depl_new = γ_depl   # depleted cluster will be empty; value unused
+        lpr        = log_jac_aug
+    end
+
+    return γ_depl_new, γ_aug_new, lpr
+end
+
 # ============================================================================
 # Table Contribution
 # ============================================================================
@@ -230,6 +425,10 @@ function table_contribution(
     γ  = state.γ_dict[sort(table)]
     r  = state.r
     n_k = length(table)
+
+    # γ must be positive (InverseGamma support); guard against temporarily invalid
+    # values that can arise during WeightedMean fixed-dim moves before rejection.
+    γ <= 0 && return -Inf
 
     y_k = view(y, table)
     P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))

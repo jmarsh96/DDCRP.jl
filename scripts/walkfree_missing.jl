@@ -45,12 +45,10 @@ missing_idx = findfirst(ismissing, y)
 @printf("Comparing models on %d observations, %d missing. Tracking index %d.\n",
         n, sum(ismissing.(y)), missing_idx)
 
-γ_a = 1.0
-γ_b = 0.01
-r_a = 1.0
-r_b = 0.01
+
 ddcrp_params = DDCRPParams(1.0, 1.0, 1.0, 0.1, 1.0, 0.1)
 n_samples = 250_000
+#n_samples = 50_000
 opts_common = MCMCOptions(
     n_samples = n_samples,
     verbose = true,
@@ -67,11 +65,16 @@ opts_common = MCMCOptions(
 # ============================================================
 println("\n=== NBPopulationRatesMarg (Gibbs) ===")
 model_marg  = NBPopulationRatesMarg()
+γ_a = 1.0
+γ_b = 0.1
+r_a = 1.0
+r_b = 0.1
 priors_marg = NBPopulationRatesMargPriors(γ_a, γ_b, r_a, r_b)
 
 samples_marg, _ = mcmc(
     model_marg, y, P, D, ddcrp_params, priors_marg, ConjugateProposal();
-    opts = opts_common
+    opts = opts_common,
+    init_params = Dict{Symbol,Any}(:r => 10.0)
 )
 
 # ============================================================
@@ -80,10 +83,11 @@ samples_marg, _ = mcmc(
 println("\n=== NBPopulationRates (RJMCMC) ===")
 model_rjmcmc  = NBPopulationRates()
 priors_rjmcmc = NBPopulationRatesPriors(γ_a, γ_b, r_a, r_b)
-
+proposal = FixedDistributionProposal([Exponential(10.0)])
 samples_rjmcmc, _ = mcmc(
-    model_rjmcmc, y, P, D, ddcrp_params, priors_rjmcmc, PriorProposal();
-    opts = opts_common
+    model_rjmcmc, y, P, D, ddcrp_params, priors_rjmcmc, proposal;
+    opts = opts_common,
+    init_params = Dict{Symbol,Any}(:r => 10.0)
 )
 
 # ============================================================
@@ -112,6 +116,33 @@ p4 = plot(samples_marg.logpost[idx],   label="Gibbs (Marg)", title="Log-posterio
 plot!(p4, samples_rjmcmc.logpost[idx], label="RJMCMC", alpha=0.7)
 
 display(plot(p1, p2, p3, p4, layout=(2,2), size=(900,600)))
+
+# ============================================================
+# Grouped barplot: posterior distribution of n_clusters
+# ============================================================
+nc_marg   = calculate_n_clusters(samples_marg.c[idx, :])
+nc_rjmcmc = calculate_n_clusters(samples_rjmcmc.c[idx, :])
+cm_marg   = countmap(nc_marg)
+cm_rjmcmc = countmap(nc_rjmcmc)
+all_k     = sort(collect(union(keys(cm_marg), keys(cm_rjmcmc))))
+n_idx     = length(idx)
+
+pct_marg   = [100 * get(cm_marg,   k, 0) / n_idx for k in all_k]
+pct_rjmcmc = [100 * get(cm_rjmcmc, k, 0) / n_idx for k in all_k]
+
+p_bar = groupedbar(
+    all_k,
+    hcat(pct_marg, pct_rjmcmc),
+    bar_position = :dodge,
+    bar_width     = 0.7,
+    label         = ["Gibbs (Marg)" "RJMCMC"],
+    xlabel        = "Number of clusters",
+    ylabel        = "Posterior probability (%)",
+    title         = "Posterior distribution of n_clusters",
+    legend        = :topright,
+    size          = (1600, 800)
+)
+display(p_bar)
 
 # ============================================================
 # Numerical summaries
