@@ -199,6 +199,7 @@ function run_rjmcmc_config(cfg, y, P, D, ddcrp_params, priors_unmarg, opts)
         ar_death      = ar.death,
         ar_fixed      = ar.fixed,
         time_s        = elapsed,
+        k_probs       = proportionmap(nc),
     )
 end
 
@@ -276,6 +277,7 @@ gibbs_summary = (
     ar_death = NaN,
     ar_fixed = NaN,
     time_s   = elapsed_gibbs,
+    k_probs  = proportionmap(nc_g),
 )
 
 @printf("  mean_K=%.2f  mode_K=%d  ESS(K)=%.1f  time=%.1fs\n",
@@ -329,4 +331,15 @@ df_summary = DataFrame(
 csv_path = "results/walkfree/proposal_comparison.csv"
 CSV.write(csv_path, df_summary)
 println("\nSummary saved to $csv_path")
+
+# ── K posterior probability table ─────────────────────────────────────────────
+all_K = sort(collect(reduce(union, keys(r.k_probs) for r in all_results)))
+df_k  = DataFrame(K = all_K)
+for r in all_results
+    df_k[!, r.name] = [get(r.k_probs, k, 0.0) for k in all_K]
+end
+
+k_csv_path = "results/walkfree/k_posterior_probs.csv"
+CSV.write(k_csv_path, df_k)
+println("K posterior probabilities saved to $k_csv_path")
 println("Chains saved to results/walkfree/chains/")

@@ -52,18 +52,28 @@ isempty(chain_files) && error("No .jld2 files found in $SRC_DIR")
 
 println("Loading $(length(chain_files)) chain(s) from $SRC_DIR …")
 
-struct ChainInfo
-    name     :: String
-    samples  :: Any           # NBPopulationRatesSamples or …MargSamples
-    diag     :: Any
-    cfg      :: Any           # NamedTuple or nothing
-    n_iter   :: Int
-    idx      :: UnitRange{Int}  # post-burnin index
-    nc       :: Vector{Int}     # K per post-burnin iteration
+# Full info kept only while processing one chain at a time (Section 1).
+# After Section 1 plots are saved, we keep only the compact summary.
+struct ChainSummary
+    name    :: String
+    diag    :: Any
+    cfg     :: Any
+    n_iter  :: Int
+    idx     :: UnitRange{Int}
+    nc      :: Vector{Int}
+    r_post  :: Vector{Float64}   # samples.r[idx]  – post-burnin slice only
+    α_post  :: Vector{Float64}   # samples.α_ddcrp[idx]
 end
 
-chains = ChainInfo[]
-for fpath in chain_files
+# ============================================================================
+# Section 1 – Per-config trace plots  (process one chain at a time)
+# ============================================================================
+
+println("[Section 1] Per-config trace plots → $(joinpath(OUT_DIR, "traces"))")
+
+chains = ChainSummary[]
+
+for (i, fpath) in enumerate(chain_files)
     data    = load(fpath)
     samples = data["samples"]
     diag    = data["diag"]
@@ -83,9 +93,59 @@ for fpath in chain_files
         replace(stem, r"_thinned$" => "")
     end
 
-    push!(chains, ChainInfo(name, samples, diag, cfg, n_iter, idx, nc))
     @printf("  %-55s  %d post-burnin iters  mean_K=%.2f\n",
             name, length(idx), mean(nc))
+
+    # ── per-config plots ────────────────────────────────────────────────────
+    col = color_for(i)
+    pfx = joinpath(OUT_DIR, "traces", replace(name, r"[^A-Za-z0-9_\-]" => "_"))
+
+    # K trace
+    p = plot(nc; title="K trace — $name", xlabel="Post-burnin iteration",
+             ylabel="Number of clusters", color=col, alpha=0.7, linewidth=0.8, legend=false)
+    savefig(p, "$(pfx)_k_trace.png")
+
+    # K distribution (bar chart)
+    cm = countmap(nc)
+    ks = sort(collect(keys(cm)))
+    ps = [cm[k] / length(nc) for k in ks]
+    p = bar(ks, ps; title="K distribution — $name", xlabel="K",
+            ylabel="Posterior probability", color=col, legend=false)
+    savefig(p, "$(pfx)_k_dist.png")
+
+    # r trace / density
+    r_post = Vector{Float64}(samples.r[idx])
+    p = plot(r_post; title="r trace — $name", xlabel="Post-burnin iteration",
+             ylabel="r (dispersion)", color=col, alpha=0.7, linewidth=0.8, legend=false)
+    savefig(p, "$(pfx)_r_trace.png")
+    p = density(r_post; title="r density — $name", xlabel="r", ylabel="Density",
+                color=col, linewidth=2, legend=false)
+    savefig(p, "$(pfx)_r_density.png")
+
+    # α trace / density
+    α_post = Vector{Float64}(samples.α_ddcrp[idx])
+    p = plot(α_post; title="α trace — $name", xlabel="Post-burnin iteration",
+             ylabel="α (DDCRP concentration)", color=col, alpha=0.7, linewidth=0.8, legend=false)
+    savefig(p, "$(pfx)_alpha_trace.png")
+    p = density(α_post; title="α density — $name", xlabel="α", ylabel="Density",
+                color=col, linewidth=2, legend=false)
+    savefig(p, "$(pfx)_alpha_density.png")
+
+    # log-posterior trace
+    lp_post = samples.logpost[idx]
+    p = plot(lp_post; title="Log-posterior trace — $name", xlabel="Post-burnin iteration",
+             ylabel="Log-posterior", color=col, alpha=0.7, linewidth=0.8, legend=false)
+    savefig(p, "$(pfx)_logpost_trace.png")
+
+    @printf("  %s  saved\n", name)
+
+    # Store only the compact summary – drop `samples` (and the large c matrix)
+    push!(chains, ChainSummary(name, diag, cfg, n_iter, idx, nc, r_post, α_post))
+
+    # Release the JLD2 data and trigger GC before loading the next chain
+    data = nothing
+    samples = nothing
+    GC.gc()
 end
 println()
 
@@ -102,61 +162,6 @@ function safe_ar(diag, sym)
     end
 end
 
-# ============================================================================
-# Section 1 – Per-config trace plots
-# ============================================================================
-
-println("[Section 1] Per-config trace plots → $(joinpath(OUT_DIR, "traces"))")
-
-for (i, ch) in enumerate(chains)
-    col  = color_for(i)
-    s    = ch.samples
-    idx  = ch.idx
-    name = ch.name
-    pfx  = joinpath(OUT_DIR, "traces", replace(name, r"[^A-Za-z0-9_\-]" => "_"))
-
-    # K trace
-    p = plot(ch.nc; title="K trace — $name", xlabel="Post-burnin iteration",
-             ylabel="Number of clusters", color=col, alpha=0.7, linewidth=0.8, legend=false)
-    savefig(p, "$(pfx)_k_trace.png")
-
-    # K distribution (bar chart)
-    cm = countmap(ch.nc)
-    ks = sort(collect(keys(cm)))
-    ps = [cm[k] / length(ch.nc) for k in ks]
-    p = bar(ks, ps; title="K distribution — $name", xlabel="K",
-            ylabel="Posterior probability", color=col, legend=false)
-    savefig(p, "$(pfx)_k_dist.png")
-
-    # r trace (global dispersion)
-    r_post = s.r[idx]
-    p = plot(r_post; title="r trace — $name", xlabel="Post-burnin iteration",
-             ylabel="r (dispersion)", color=col, alpha=0.7, linewidth=0.8, legend=false)
-    savefig(p, "$(pfx)_r_trace.png")
-
-    p = density(r_post; title="r density — $name", xlabel="r", ylabel="Density",
-                color=col, linewidth=2, legend=false)
-    savefig(p, "$(pfx)_r_density.png")
-
-    # α trace
-    α_post = s.α_ddcrp[idx]
-    p = plot(α_post; title="α trace — $name", xlabel="Post-burnin iteration",
-             ylabel="α (DDCRP concentration)", color=col, alpha=0.7, linewidth=0.8, legend=false)
-    savefig(p, "$(pfx)_alpha_trace.png")
-
-    p = density(α_post; title="α density — $name", xlabel="α", ylabel="Density",
-                color=col, linewidth=2, legend=false)
-    savefig(p, "$(pfx)_alpha_density.png")
-
-    # log-posterior trace
-    lp_post = s.logpost[idx]
-    p = plot(lp_post; title="Log-posterior trace — $name", xlabel="Post-burnin iteration",
-             ylabel="Log-posterior", color=col, alpha=0.7, linewidth=0.8, legend=false)
-    savefig(p, "$(pfx)_logpost_trace.png")
-
-    @printf("  %s  saved\n", name)
-end
-println()
 
 # ============================================================================
 # Section 2 – K distribution overlay (all configs on one plot)
@@ -238,7 +243,7 @@ names_rj  = [ch.name for ch in rjmcmc_chains]
 ess_vals  = [effective_sample_size(Float64.(ch.nc))            for ch in rjmcmc_chains]
 mean_K    = [mean(ch.nc)                                        for ch in rjmcmc_chains]
 std_K     = [std(Float64.(ch.nc))                               for ch in rjmcmc_chains]
-mean_r    = [mean(ch.samples.r[ch.idx])                         for ch in rjmcmc_chains]
+mean_r    = [mean(ch.r_post)                                    for ch in rjmcmc_chains]
 ar_birth  = [safe_ar(ch.diag, :birth)                           for ch in rjmcmc_chains]
 ar_death  = [safe_ar(ch.diag, :death)                           for ch in rjmcmc_chains]
 ar_fixed  = [safe_ar(ch.diag, :fixed)                           for ch in rjmcmc_chains]
@@ -300,7 +305,7 @@ p = bar(xs, mean_r; xticks=(xs, names_rj), xrotation=rot,
         legend=:outertopright, size=(max(900, 25*n_rj), 500), bottom_margin=80Plots.px,
         label="RJMCMC")
 for gc in gibbs_chains
-    hline!(p, [mean(gc.samples.r[gc.idx])]; linestyle=:dash, color=:black,
+    hline!(p, [mean(gc.r_post)]; linestyle=:dash, color=:black,
            linewidth=2, label="$(gc.name) mean r")
 end
 savefig(p, joinpath(OUT_DIR, "comparison", "mean_r.png"))
@@ -412,8 +417,8 @@ df_summary = DataFrame(
     q05_K     = [quantile(Float64.(ch.nc), 0.05) for ch in all_chains],
     q95_K     = [quantile(Float64.(ch.nc), 0.95) for ch in all_chains],
     ess_K     = [effective_sample_size(Float64.(ch.nc)) for ch in all_chains],
-    mean_r    = [mean(ch.samples.r[ch.idx])   for ch in all_chains],
-    mean_α    = [mean(ch.samples.α_ddcrp[ch.idx]) for ch in all_chains],
+    mean_r    = [mean(ch.r_post)              for ch in all_chains],
+    mean_α    = [mean(ch.α_post)              for ch in all_chains],
     ar_birth  = [safe_ar(ch.diag, :birth) for ch in all_chains],
     ar_death  = [safe_ar(ch.diag, :death) for ch in all_chains],
     ar_fixed  = [safe_ar(ch.diag, :fixed) for ch in all_chains],
