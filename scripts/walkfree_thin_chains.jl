@@ -12,6 +12,7 @@
 # The thinned files are intended for download / offline analysis.
 # ============================================================================
 
+using DDCRP          # must be loaded so JLD2 can deserialise DDCRP types
 using JLD2
 using Printf
 
