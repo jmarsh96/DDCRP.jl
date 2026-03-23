@@ -39,6 +39,7 @@ for src_path in chain_files
     samples = data["samples"]
     diag    = data["diag"]
     cfg     = get(data, "cfg", nothing)
+    data    = nothing          # release the raw load dict
 
     n_iter = size(samples.c, 1)
     idx    = 1:THIN:n_iter                 # every THIN-th row
@@ -55,6 +56,7 @@ for src_path in chain_files
         end
     end
     samples_thin = typeof(samples)(thinned_fields...)
+    samples      = nothing     # release the full-size samples
 
     n_thin = length(idx)
     @printf("  %-55s  %6d → %6d samples\n", fname, n_iter, n_thin)
@@ -64,6 +66,9 @@ for src_path in chain_files
     else
         jldsave(dst_path; samples=samples_thin, diag, cfg)
     end
+
+    samples_thin = nothing     # release thinned copy after saving
+    GC.gc()
 end
 
 println("\nDone. Thinned chains saved to $DST_DIR")
