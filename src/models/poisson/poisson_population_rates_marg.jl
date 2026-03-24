@@ -51,6 +51,7 @@ State for PoissonPopulationRatesMarg model.
 """
 mutable struct PoissonPopulationRatesMargState <: AbstractMCMCState{Float64}
     c::Vector{Int}
+    y::Vector{Int}  # For imputed counts; not part of the original state but needed for missing data handling
 end
 
 # ============================================================================
@@ -91,6 +92,7 @@ struct PoissonPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
+    y::Matrix{Int}
 end
 
 requires_population(::PoissonPopulationRatesMarg) = true
@@ -200,7 +202,7 @@ function initialise_state(
 )
     D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
-    return PoissonPopulationRatesMargState(c)
+    return PoissonPopulationRatesMargState(c, observations(data))
 end
 
 # ============================================================================
@@ -218,6 +220,7 @@ function allocate_samples(::PoissonPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
+        zeros(Int, n_samples, n),   # y
     )
 end
 
@@ -233,4 +236,47 @@ function extract_samples!(
     iter::Int
 )
     samples.c[iter, :] = state.c
+    samples.y[iter, :] = state.y
+end
+
+# ============================================================================
+# Missing Data Imputation
+# ============================================================================
+
+"""
+    impute_y(::PoissonPopulationRatesMarg, state, data, priors, i)
+
+Impute a missing count y_i by drawing from the posterior/prior predictive,
+integrating over ρ_k via Gamma-Poisson conjugacy.
+
+- Cluster with other members: sample ρ_k from the conjugate posterior
+  Gamma(S_others + ρ_a, rate = P_others + ρ_b), then draw y_i ~ Poisson(P_i · ρ_k).
+- Singleton cluster: sample ρ_k from the prior Gamma(ρ_a, rate = ρ_b).
+
+Uses state.y for other cluster members' counts to correctly handle multiple
+missing observations in the same cluster.
+"""
+function impute_y(
+    ::PoissonPopulationRatesMarg,
+    state::PoissonPopulationRatesMargState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesMargPriors,
+    i::Int
+)
+    P   = population(data)
+    P_i = P isa Real ? Float64(P) : Float64(P[i])
+
+    tables = table_vector(state.c)
+    table  = tables[findfirst(t -> i in t, tables)]
+    others = filter(j -> j != i, table)
+
+    if isempty(others)
+        ρ_k = rand(Gamma(priors.ρ_a, 1.0 / priors.ρ_b))
+    else
+        S_others = Float64(sum(state.y[j] for j in others))
+        P_others = sum(P isa Real ? Float64(P) : Float64(P[j]) for j in others)
+        ρ_k = rand(Gamma(S_others + priors.ρ_a, 1.0 / (P_others + priors.ρ_b)))
+    end
+
+    return rand(Poisson(P_i * ρ_k))
 end
