@@ -26,6 +26,7 @@ export AbstractPriors, AbstractMCMCSamples
 export AbstractObservedData, CountData, CountDataWithTrials, CountDataWithPopulation
 export observations, distance_matrix, trials, has_trials, nobs, requires_trials
 export population, has_population, requires_population
+export get_missing_mask, has_missing
 
 # Birth proposals for RJMCMC
 export PriorProposal, ConjugateProposal, MomentMatchedProposal
@@ -124,6 +125,9 @@ export likelihood_contribution, negbin_logpdf, logbinomial
 export simulate_m, simulate_λ
 export simulate_negbin_data, simulate_poisson_data, simulate_binomial_data, simulate_skewnormal_data
 export simulate_gamma_data, simulate_weibull_data
+
+# Posterior predictive
+export posterior_predictive
 
 # Analysis utilities
 export calculate_n_clusters, posterior_num_cluster_distribution

@@ -91,14 +91,14 @@ function update_c_i!(
 end
 
 function update_c_i!(
-    model::LikelihoodModel,
+    ::LikelihoodModel,
     i::Int,
     state::AbstractMCMCState,
-    data::AbstractObservedData,
-    priors::AbstractPriors,
+    ::AbstractObservedData,
+    ::AbstractPriors,
     log_DDCRP::AbstractMatrix,
-    birth_proposal::ConjugateProposal,
-    fixed_dim_proposal::FixedDimensionProposal,
+    ::ConjugateProposal,
+    ::FixedDimensionProposal,
     ::MissingUpdate
 )
     n = length(state.c)
@@ -109,7 +109,6 @@ function update_c_i!(
     probs = exp.(log_probs .- maximum(log_probs))
     new_assignment = sample(1:n, Weights(probs))
     state.c[i] = new_assignment
-    data.y[i] = impute_y(model, state, data, priors, i)
 
     return (:gibbs, new_assignment, true)
 end
@@ -375,7 +374,6 @@ function update_c_i!(
         end
     end
 
-    data.y[i] = impute_y(model, state, data, priors, i)
     return (:gibbs, j_star, true)
 end
 
@@ -412,7 +410,7 @@ function mcmc(
     fixed_dim_proposal::FixedDimensionProposal = NoUpdate(),
     opts::MCMCOptions = MCMCOptions(),
     init_params::Union{Nothing, Dict{Symbol,Any}} = nothing,
-    missing_mask::BitVector = nothing
+    missing_mask::Union{Nothing, BitVector} = nothing
 )
     # Validate data matches model requirements
     if requires_trials(model) && !has_trials(data)
@@ -468,6 +466,9 @@ function mcmc(
     samples.α_ddcrp[1] = α_current
     samples.s_ddcrp[1] = s_current
 
+    # Resolve missing_mask: default to all-observed when not provided
+    effective_mask = isnothing(missing_mask) ? falses(n) : missing_mask
+
     # Main MCMC loop
     for iter in 2:opts.n_samples
         tables = table_vector(state.c)
@@ -476,7 +477,7 @@ function mcmc(
         update_params!(model, state, data, priors, tables, log_DDCRP, opts)
 
         # Update customer assignments (gibbs or rjmcmc based on model/proposal)
-        result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts, missing_mask)
+        result = update_c!(model, state, data, priors, proposal, fixed_dim_proposal, log_DDCRP, opts, effective_mask)
 
         # Update DDCRP hyperparameters if requested
         if infer_ddcrp
@@ -550,30 +551,17 @@ function mcmc(model::LikelihoodModel, y_::AbstractVector, N::Union{<:Real, <:Abs
               opts::MCMCOptions = MCMCOptions(),
               init_params::Union{Nothing, Dict{Symbol,Any}} = nothing
 )
-    n = length(y_)
-    missing_mask = ismissing.(y_)
-    if sum(missing_mask) > 0
-        finite_obs = collect(skipmissing(y_))
-        y = zeros(Int64, n)
-        for i in 1:n
-            if ismissing(y_[i])
-                y[i] = rand(finite_obs)
-            else
-                y[i] = y_[i]
-            end
-        end
-    else
-        y = y_
-    end
+    missing_mask = BitVector(ismissing.(y_))
+    y = Int.(coalesce.(y_, 0))  # 0 placeholder for missing; filtered in table_contribution
     if requires_population(model)
-        data = CountDataWithPopulation(y, N, D)
+        data = CountDataWithPopulation(y, N, D, missing_mask)
     else
         data = CountDataWithTrials(y, N, D)
     end
     return mcmc(
         model, data, ddcrp_params, priors, proposal;
-        fixed_dim_proposal=fixed_dim_proposal, 
-        opts=opts, 
+        fixed_dim_proposal=fixed_dim_proposal,
+        opts=opts,
         init_params=init_params,
         missing_mask=missing_mask
     )

@@ -329,12 +329,15 @@ Observed count data with population/exposure offsets for Poisson/NB population m
 - `y::Ty`: Observed counts (AbstractVector)
 - `P::Tp`: Population or exposure (scalar or AbstractVector{<:Real})
 - `D::Td`: Distance matrix (AbstractMatrix)
+- `missing_mask::BitVector`: `true` for indices with missing observations (default: all false)
 """
 struct CountDataWithPopulation{Ty<:AbstractVector, Tp<:Union{<:Real,<:AbstractVector{<:Real}}, Td<:AbstractMatrix} <: AbstractObservedData
     y::Ty
     P::Tp
     D::Td
+    missing_mask::BitVector
 end
+CountDataWithPopulation(y, P, D) = CountDataWithPopulation(y, P, D, falses(length(y)))
 
 """
     ContinuousData{Ty, Td} <: AbstractObservedData
@@ -373,6 +376,14 @@ population(data::CountDataWithPopulation) = data.P
 """Check if data has population/exposure information."""
 has_population(::AbstractObservedData) = false
 has_population(::CountDataWithPopulation) = true
+
+"""Return the missing data mask (BitVector of length n); nothing for other data types."""
+get_missing_mask(data::CountDataWithPopulation) = data.missing_mask
+get_missing_mask(::AbstractObservedData) = nothing
+
+"""Return true if any observations are missing."""
+has_missing(data::CountDataWithPopulation) = any(data.missing_mask)
+has_missing(::AbstractObservedData) = false
 
 """Number of observations."""
 nobs(data::AbstractObservedData) = length(data.y)

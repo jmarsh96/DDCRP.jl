@@ -6,12 +6,13 @@
 #   y_i | ρ_k, P_i ~ Poisson(P_i * ρ_k)   for observation i in cluster k
 #   ρ_k ~ Gamma(ρ_a, ρ_b)                  (marginalised via Gamma-Poisson conjugacy)
 #
-# Gamma-Poisson conjugacy gives the closed-form table contribution:
-#   TC_k = Σ_{i∈k} [y_i·log(P_i) − loggamma(y_i + 1)]
+# Gamma-Poisson conjugacy gives the closed-form table contribution (observed only):
+#   TC_k = Σ_{i∈k_obs} [y_i·log(P_i) − loggamma(y_i + 1)]
 #          + ρ_a·log(ρ_b) − loggamma(ρ_a)
 #          + loggamma(S_k + ρ_a) − (S_k + ρ_a)·log(P_k_total + ρ_b)
 #
-# where S_k = Σ_{i∈k} y_i, P_k_total = Σ_{i∈k} P_i.
+# where S_k = Σ_{i∈k_obs} y_i, P_k_total = Σ_{i∈k_obs} P_i.
+# Missing observations contribute nothing to the likelihood (their integral = 1).
 #
 # Parameters: c (assignments only)
 # Marginalised: ρ_k (cluster rate multipliers integrated out)
@@ -29,6 +30,9 @@ using Distributions, SpecialFunctions, Random
 
 Poisson model with population/exposure offsets and cluster rates marginalised out.
 Uses Gamma-Poisson conjugacy for a closed-form marginal likelihood.
+
+Missing observations are excluded from the likelihood; their cluster assignments
+are updated using only the ddCRP prior.
 
 Parameters:
 - c: Customer assignments only
@@ -51,7 +55,6 @@ State for PoissonPopulationRatesMarg model.
 """
 mutable struct PoissonPopulationRatesMargState <: AbstractMCMCState{Float64}
     c::Vector{Int}
-    y::Vector{Int}  # For imputed counts; not part of the original state but needed for missing data handling
 end
 
 # ============================================================================
@@ -92,7 +95,6 @@ struct PoissonPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
-    y::Matrix{Int}
 end
 
 requires_population(::PoissonPopulationRatesMarg) = true
@@ -105,12 +107,15 @@ requires_population(::PoissonPopulationRatesMarg) = true
     table_contribution(model::PoissonPopulationRatesMarg, table, state, data, priors)
 
 Compute log-contribution of a table after analytically marginalising ρ_k.
+Only observed (non-missing) members contribute to the likelihood.
 
-TC_k = Σ_{i∈k} [y_i·log(P_i) − loggamma(y_i + 1)]
+Returns 0.0 for tables with no observed members (the Gamma integral over the prior = 1).
+
+TC_k = Σ_{i∈k_obs} [y_i·log(P_i) − loggamma(y_i + 1)]
      + ρ_a·log(ρ_b) − loggamma(ρ_a)
      + loggamma(S_k + ρ_a) − (S_k + ρ_a)·log(P_k_total + ρ_b)
 
-where S_k = Σ_{i∈k} y_i, P_k_total = Σ_{i∈k} P_i.
+where S_k = Σ_{i∈k_obs} y_i, P_k_total = Σ_{i∈k_obs} P_i.
 """
 function table_contribution(
     ::PoissonPopulationRatesMarg,
@@ -121,10 +126,14 @@ function table_contribution(
 )
     y = observations(data)
     P = population(data)
+    mask = data.missing_mask
 
-    n_k = length(table)
-    y_k = view(y, table)
-    P_k = P isa Real ? fill(Float64(P), n_k) : Float64.(view(P, table))
+    obs_table = filter(i -> !mask[i], table)
+    isempty(obs_table) && return 0.0
+
+    n_k = length(obs_table)
+    y_k = view(y, obs_table)
+    P_k = P isa Real ? fill(Float64(P), n_k) : Float64.(view(P, obs_table))
 
     S_k       = Float64(sum(y_k))
     P_k_total = sum(P_k)
@@ -202,7 +211,7 @@ function initialise_state(
 )
     D = distance_matrix(data)
     c = simulate_ddcrp(D; α=ddcrp_params.α, scale=ddcrp_params.scale, decay_fn=ddcrp_params.decay_fn)
-    return PoissonPopulationRatesMargState(c, observations(data))
+    return PoissonPopulationRatesMargState(c)
 end
 
 # ============================================================================
@@ -220,7 +229,6 @@ function allocate_samples(::PoissonPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
-        zeros(Int, n_samples, n),   # y
     )
 end
 
@@ -236,47 +244,72 @@ function extract_samples!(
     iter::Int
 )
     samples.c[iter, :] = state.c
-    samples.y[iter, :] = state.y
 end
 
 # ============================================================================
-# Missing Data Imputation
+# Posterior Predictive
 # ============================================================================
 
 """
-    impute_y(::PoissonPopulationRatesMarg, state, data, priors, i)
+    posterior_predictive(model, samples, data, priors)
 
-Impute a missing count y_i by drawing from the posterior/prior predictive,
-integrating over ρ_k via Gamma-Poisson conjugacy.
+Generate posterior predictive draws for missing observations.
 
-- Cluster with other members: sample ρ_k from the conjugate posterior
-  Gamma(S_others + ρ_a, rate = P_others + ρ_b), then draw y_i ~ Poisson(P_i · ρ_k).
-- Singleton cluster: sample ρ_k from the prior Gamma(ρ_a, rate = ρ_b).
+For each MCMC sample and each missing index j:
+1. Find j's cluster in the sampled assignment vector
+2. Compute the conjugate posterior for ρ_k using observed cluster members
+3. Draw ρ_k ~ Gamma(S_obs + ρ_a, 1/(P_obs + ρ_b))
+4. Draw y_j ~ Poisson(P_j * ρ_k)
 
-Uses state.y for other cluster members' counts to correctly handle multiple
-missing observations in the same cluster.
+Falls back to the prior when no observed data is available for the cluster.
+
+# Returns
+- `pred::Matrix{Int}`: shape (n_samples, n_missing), predictive draws
+- `missing_indices::Vector{Int}`: which original indices are missing
 """
-function impute_y(
+function posterior_predictive(
     ::PoissonPopulationRatesMarg,
-    state::PoissonPopulationRatesMargState,
+    samples::PoissonPopulationRatesMargSamples,
     data::CountDataWithPopulation,
-    priors::PoissonPopulationRatesMargPriors,
-    i::Int
+    priors::PoissonPopulationRatesMargPriors
 )
-    P   = population(data)
-    P_i = P isa Real ? Float64(P) : Float64(P[i])
+    n_samples = size(samples.c, 1)
+    y_obs = observations(data)
+    P = population(data)
+    mask = data.missing_mask
 
-    tables = table_vector(state.c)
-    table  = tables[findfirst(t -> i in t, tables)]
-    others = filter(j -> j != i, table)
+    missing_indices = findall(mask)
+    n_missing = length(missing_indices)
+    pred = zeros(Int, n_samples, n_missing)
 
-    if isempty(others)
-        ρ_k = rand(Gamma(priors.ρ_a, 1.0 / priors.ρ_b))
-    else
-        S_others = Float64(sum(state.y[j] for j in others))
-        P_others = sum(P isa Real ? Float64(P) : Float64(P[j]) for j in others)
-        ρ_k = rand(Gamma(S_others + priors.ρ_a, 1.0 / (P_others + priors.ρ_b)))
+    for s in 1:n_samples
+        c_s = samples.c[s, :]
+        tables = table_vector(c_s)
+        # Build a lookup: observation index → table index in tables vector
+        table_lookup = Vector{Int}(undef, length(c_s))
+        for (t, tbl) in enumerate(tables)
+            for i in tbl
+                table_lookup[i] = t
+            end
+        end
+
+        for (k, j) in enumerate(missing_indices)
+            table = tables[table_lookup[j]]
+            obs_members = filter(i -> !mask[i], table)
+
+            if isempty(obs_members)
+                ρ_k = rand(Gamma(priors.ρ_a, 1.0 / priors.ρ_b))
+            else
+                S_obs = Float64(sum(y_obs[i] for i in obs_members))
+                P_obs = P isa Real ? Float64(P) * length(obs_members) :
+                                     sum(Float64(P[i]) for i in obs_members)
+                ρ_k = rand(Gamma(S_obs + priors.ρ_a, 1.0 / (P_obs + priors.ρ_b)))
+            end
+
+            P_j = P isa Real ? Float64(P) : Float64(P[j])
+            pred[s, k] = rand(Poisson(P_j * ρ_k))
+        end
     end
 
-    return rand(Poisson(P_i * ρ_k))
+    return pred, missing_indices
 end

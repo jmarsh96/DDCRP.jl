@@ -65,7 +65,6 @@ mutable struct NBPopulationRatesMargState{T<:Real} <: AbstractMCMCState{T}
     c::Vector{Int}
     λ::Vector{T}
     r::T
-    y::Vector{Int}  # For imputed counts; not part of the original state but needed for missing data handling
 end
 
 # ============================================================================
@@ -112,7 +111,6 @@ struct NBPopulationRatesMargSamples{T<:Real} <: AbstractMCMCSamples
     logpost::Vector{T}
     α_ddcrp::Vector{T}
     s_ddcrp::Vector{T}
-    y::Matrix{Int}
 end
 
 requires_population(::NBPopulationRatesMarg) = true
@@ -125,11 +123,14 @@ requires_population(::NBPopulationRatesMarg) = true
     table_contribution(model::NBPopulationRatesMarg, table, state, data, priors)
 
 Compute log-contribution of a table after analytically marginalising γ_k.
+Missing observations have their λ_i integrated out analytically (prior integrates
+to 1, no likelihood), so only observed members contribute.
 
-TC_k = Σ_{i∈k} [ y_i·log(P_i·λ_i) − P_i·λ_i − log Γ(y_i+1) ]
-     + n_k·(r·log(r) − log Γ(r)) + (r−1)·Σ log(λ_i)
-     + log Γ(n_k·r + γ_a) − (n_k·r + γ_a)·log(r·Λ_k + γ_b)
+TC_k = Σ_{i∈k,obs} [ y_i·log(P_i·λ_i) − P_i·λ_i − log Γ(y_i+1) ]
+     + n_obs·(r·log(r) − log Γ(r)) + (r−1)·Σ_{obs} log(λ_i)
+     + log Γ(n_obs·r + γ_a) − (n_obs·r + γ_a)·log(r·Λ_obs + γ_b)
      + γ_a·log(γ_b) − log Γ(γ_a)
+where n_obs and Λ_obs count observed members only.
 """
 function table_contribution(
     ::NBPopulationRatesMarg,
@@ -138,22 +139,36 @@ function table_contribution(
     data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors
 )
-    y   = observations(data)
-    P   = population(data)
-    r   = state.r
-    n_k = length(table)
+    y    = observations(data)
+    P    = population(data)
+    mask = data.missing_mask
+    r    = state.r
 
-    y_k = view(y, table)
-    P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
+    P_k = P isa Int ? fill(Float64(P), length(table)) : Float64.(view(P, table))
     λ_k = view(state.λ, table)
-    Λ_k = sum(λ_k)
 
-    poisson_terms = sum(Float64(y_k[j]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
-                        loggamma(Float64(y_k[j]) + 1) for j in 1:n_k)
-    gamma_norm    = n_k * (r * log(r) - loggamma(r))
-    lambda_power  = (r - 1) * sum(log(λ_k[j]) for j in 1:n_k)
-    ig_integral   = loggamma(n_k * r + priors.γ_a) - (n_k * r + priors.γ_a) * log(r * Λ_k + priors.γ_b)
-    ig_norm       = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
+    # Missing obs: λ_i integrated out analytically (∫ Gamma dλ_i = 1), contributes nothing.
+    # Only observed members contribute to all terms.
+    poisson_terms    = 0.0
+    lambda_power_obs = 0.0
+    Λ_obs            = 0.0
+    n_obs            = 0
+
+    for (j, i) in enumerate(table)
+        mask[i] && continue
+        n_obs            += 1
+        Λ_obs            += λ_k[j]
+        poisson_terms    += Float64(y[i]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
+                            loggamma(Float64(y[i]) + 1)
+        lambda_power_obs += log(λ_k[j])
+    end
+
+    n_obs == 0 && return 0.0
+
+    gamma_norm   = n_obs * (r * log(r) - loggamma(r))
+    lambda_power = (r - 1) * lambda_power_obs
+    ig_integral  = loggamma(n_obs * r + priors.γ_a) - (n_obs * r + priors.γ_a) * log(r * Λ_obs + priors.γ_b)
+    ig_norm      = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
 
     return poisson_terms + gamma_norm + lambda_power + ig_integral + ig_norm
 end
@@ -198,35 +213,46 @@ function update_λ!(
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.3
 )
-    y = observations(data)
-    P = population(data)
-    r = state.r
+    y    = observations(data)
+    P    = population(data)
+    mask = data.missing_mask
+    r    = state.r
 
     for table in tables
         n_k = length(table)
         y_k = view(y, table)
         P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
         λ_k = view(state.λ, table)
-        Λ_k = sum(λ_k)
+
+        # Only observed members enter the IG integral; missing λ_i are integrated out.
+        n_obs = 0
+        Λ_obs = 0.0
+        for (j, i) in enumerate(table)
+            mask[i] && continue
+            n_obs += 1
+            Λ_obs += λ_k[j]
+        end
 
         for (j, i) in enumerate(table)
-            λ_old  = state.λ[i]
-            λ_can  = exp(log(λ_old) + rand(Normal(0.0, prop_sd)))
+            mask[i] && continue  # λ_i integrated out analytically; skip
 
-            Λ_new = Λ_k - λ_old + λ_can
+            λ_old = state.λ[i]
+            λ_can = exp(log(λ_old) + rand(Normal(0.0, prop_sd)))
+            Λ_new = Λ_obs - λ_old + λ_can
 
-            # O(1) delta in TC: Poisson + Gamma power + IG integral terms
-            ΔTC = Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old) +
+            poisson_delta = Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old)
+
+            # O(1) delta in TC using observed-only n_obs and Λ_obs
+            ΔTC = poisson_delta +
                   (r - 1) * log(λ_can / λ_old) -
-                  (n_k * r + priors.γ_a) * (log(r * Λ_new + priors.γ_b) -
-                                             log(r * Λ_k  + priors.γ_b))
+                  (n_obs * r + priors.γ_a) * (log(r * Λ_new + priors.γ_b) -
+                                               log(r * Λ_obs  + priors.γ_b))
 
-            # Log-scale proposal Jacobian: log(λ_can) - log(λ_old)
             log_α = ΔTC + log(λ_can) - log(λ_old)
 
             if log(rand()) < log_α
                 state.λ[i] = λ_can
-                Λ_k = Λ_new
+                Λ_obs = Λ_new
             end
         end
     end
@@ -248,7 +274,7 @@ function update_r!(
     r_can = rand(Normal(state.r, prop_sd))
     r_can <= 0 && return
 
-    state_can = NBPopulationRatesMargState(state.c, state.λ, r_can, state.y)
+    state_can = NBPopulationRatesMargState(state.c, state.λ, r_can)
 
     logpost_current   = sum(table_contribution(model, table, state, data, priors) for table in tables) +
                         logpdf(Gamma(priors.r_a, 1 / priors.r_b), state.r)
@@ -284,52 +310,6 @@ function update_params!(
 end
 
 # ============================================================================
-# Missing Data Imputation
-# ============================================================================
-
-"""
-    impute_y(::NBPopulationRatesMarg, state, data, priors, i)
-
-Impute a missing count y_i by drawing from the posterior/prior predictive,
-integrating over γ_k. Also updates state.λ[i] for consistency.
-
-- Cluster with other members: sample γ_k from its conjugate posterior given
-  those members' λ values, then draw λ_i and y_i.
-- Singleton cluster: sample γ_k from the prior, then draw λ_i and y_i.
-"""
-function impute_y(
-    ::NBPopulationRatesMarg,
-    state::NBPopulationRatesMargState,
-    data::CountDataWithPopulation,
-    priors::NBPopulationRatesMargPriors,
-    i::Int
-)
-    r   = state.r
-    P   = population(data)
-    P_i = P isa Int ? Float64(P) : Float64(P[i])
-
-    # Find the cluster i now belongs to (c[i] was just updated)
-    tables = table_vector(state.c)
-    table  = tables[findfirst(t -> i in t, tables)]
-    others = filter(j -> j != i, table)
-
-    # Sample γ_k: posterior given cluster members' λ (or prior if singleton)
-    if isempty(others)
-        γ_k = rand(InverseGamma(priors.γ_a, priors.γ_b))
-    else
-        Λ_others = sum(state.λ[j] for j in others)
-        γ_k = rand(InverseGamma(length(others) * r + priors.γ_a,
-                                r * Λ_others + priors.γ_b))
-    end
-
-    # Discard the stale λ_i (anchored to old cluster); resample from new cluster
-    λ_new = rand(Gamma(r, γ_k / r))
-    state.λ[i] = λ_new
-
-    return rand(Poisson(P_i * λ_new))
-end
-
-# ============================================================================
 # State Initialization
 # ============================================================================
 
@@ -355,7 +335,7 @@ function initialise_state(
     P_vec = P isa Int ? fill(Float64(P), n) : Float64.(P)
     λ0    = [max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
-    return NBPopulationRatesMargState(c, λ0, 1.0, y)
+    return NBPopulationRatesMargState(c, λ0, 1.0)
 end
 
 # ============================================================================
@@ -375,7 +355,6 @@ function allocate_samples(::NBPopulationRatesMarg, n_samples::Int, n::Int)
         zeros(n_samples),           # logpost
         zeros(n_samples),           # α_ddcrp
         zeros(n_samples),           # s_ddcrp
-        zeros(Int, n_samples, n)   # y
     )
 end
 
@@ -393,5 +372,4 @@ function extract_samples!(
     samples.c[iter, :]  = state.c
     samples.λ[iter, :]  = state.λ
     samples.r[iter]     = state.r
-    samples.y[iter, :]  = state.y
 end
