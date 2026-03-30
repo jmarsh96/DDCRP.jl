@@ -96,6 +96,37 @@ end
 requires_population(::PoissonPopulationRates) = true
 
 # ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::PoissonPopulationRatesState) = (ρ = state.ρ_dict,)
+
+# PriorProposal samples from the conjugate posterior: Gamma(ρ_a + S_k, 1/(ρ_b + sum_P_k))
+function sample_birth_params(::PoissonPopulationRates, ::PriorProposal,
+                             S_i::Vector{Int}, state::PoissonPopulationRatesState,
+                             data::CountDataWithPopulation, priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    Q = Gamma(priors.ρ_a + S_k, 1.0 / (priors.ρ_b + sum_P))
+    ρ_new = rand(Q)
+    return (ρ = ρ_new,), logpdf(Q, ρ_new)
+end
+
+function birth_params_logpdf(::PoissonPopulationRates, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonPopulationRatesState, data::CountDataWithPopulation,
+                             priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    Q = Gamma(priors.ρ_a + S_k, 1.0 / (priors.ρ_b + sum_P))
+    return logpdf(Q, params_old.ρ)
+end
+
+# ============================================================================
 # Table Contribution
 # ============================================================================
 
@@ -126,8 +157,10 @@ function table_contribution(
 
     log_lik = log_P_term + S_k * log(ρ) - sum_P * ρ - sum(loggamma.(view(y, table) .+ 1))
 
-    # Gamma prior on ρ
-    log_prior = (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ
+    # Complete Gamma prior on ρ (normalising constant must be included: it appears
+    # once per cluster, so it does not cancel in birth/death acceptance ratios)
+    log_prior = (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ +
+                priors.ρ_a * log(priors.ρ_b) - loggamma(priors.ρ_a)
 
     return log_lik + log_prior
 end
@@ -196,8 +229,8 @@ function update_params!(
     data::CountDataWithPopulation,
     priors::PoissonPopulationRatesPriors,
     tables::Vector{Vector{Int}},
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
+    ::AbstractMatrix,
+    ::MCMCOptions
 )
     update_cluster_rates!(model, state, data, priors, tables)
 end

@@ -5,8 +5,8 @@
 #
 # Setup:
 #   - 90 observations in 3 spatial clusters (30 each)
-#   - Covariates: 2D Gaussian blobs at (0,0), (5,0), (0,5)
-#   - Distance matrix: Euclidean on covariates
+#   - Covariates: 1D Gaussian blobs at 0, 5, 10
+#   - Distance matrix: Absolute difference on covariates
 #   - True rates: ρ = [0.5, 2.0, 5.0] (well-separated)
 #   - Population: P_i ~ Uniform(500, 5000)
 #   - y_i ~ Poisson(P_i * ρ_{z_i})
@@ -19,6 +19,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 using DDCRP, Random, Distributions, Statistics
 using Printf
 using Plots, StatsPlots
+using StatsBase
 
 Random.seed!(42)
 
@@ -30,30 +31,32 @@ n_per_cluster = 30
 n_clusters    = 3
 n             = n_per_cluster * n_clusters
 
-# Cluster centres in 2D covariate space
-centres = [(0.0, 0.0), (5.0, 0.0), (0.0, 5.0)]
+# Cluster centres in 1D covariate space
+centres = [0.0, 5.0, 10.0]
 ρ_true  = [0.5, 2.0, 5.0]
 
 # True cluster labels (1-indexed)
 z_true = repeat(1:n_clusters, inner=n_per_cluster)
 
-# Generate 2D covariates
+# Generate 1D covariates
 σ_cov = 1.0
-X = zeros(n, 2)
-for (k, (cx, cy)) in enumerate(centres)
+X = zeros(n)
+for (k, cx) in enumerate(centres)
     idx = z_true .== k
-    X[idx, 1] = cx .+ σ_cov .* randn(n_per_cluster)
-    X[idx, 2] = cy .+ σ_cov .* randn(n_per_cluster)
+    X[idx] = cx .+ σ_cov .* randn(n_per_cluster)
 end
 
-# Euclidean distance matrix
-D = [sqrt(sum((X[i,:] .- X[j,:]).^2)) for i in 1:n, j in 1:n]
+# Absolute distance matrix
+D = [abs(X[i] - X[j]) for i in 1:n, j in 1:n]
 
 # Population offsets
 P = rand(500:5000, n)
 
 # Observations
 y_true = [rand(Poisson(P[i] * ρ_true[z_true[i]])) for i in 1:n]
+
+
+scatter(X, y_true ./ P)
 
 # ============================================================================
 # Mask observations
@@ -83,10 +86,21 @@ println("Observed:           $(n - length(masked_idx))")
 model       = PoissonPopulationRatesMarg()
 ddcrp_params = DDCRPParams(1.0, 2.0)
 priors      = PoissonPopulationRatesMargPriors(1.0, 0.5)
-opts        = MCMCOptions(n_samples=5000, verbose=true)
+opts        = MCMCOptions(
+    n_samples=5000, 
+    verbose=true,
+    infer_params= Dict(
+        :α_ddcrp => true, 
+        :s_ddcrp => false
+    ),
+)
 
 println("\nRunning MCMC...")
-samples, _ = mcmc(model, y_obs, P, D, ddcrp_params, priors, ConjugateProposal(); opts=opts)
+samples, _ = mcmc(
+    model, y_true, P, D, ddcrp_params, priors, ConjugateProposal(); opts=opts
+)
+
+plot(calculate_n_clusters(samples.c))
 
 # Reconstruct data object as mcmc() sees it (with missing_mask)
 missing_mask = BitVector(ismissing.(y_obs))
@@ -103,6 +117,8 @@ pred, pred_idx = posterior_predictive(model, samples, data, priors)
 # Burn-in: discard first 20%
 burn = div(opts.n_samples, 5)
 pred_post = pred[(burn+1):end, :]
+
+
 
 # ============================================================================
 # Evaluation
