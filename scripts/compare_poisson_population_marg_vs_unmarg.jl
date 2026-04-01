@@ -9,9 +9,6 @@
 #        rates ρ = [0.5, 3.0], population P_i ~ Uniform(500, 3000).
 # ============================================================================
 
-using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-
 using DDCRP, Random, Distributions, Statistics
 using Printf, Plots, StatsPlots, StatsBase
 

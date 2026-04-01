@@ -304,3 +304,36 @@ function extract_samples!(
         end
     end
 end
+
+# ============================================================================
+# Per-parameter dispatch — required by Resample fixed-dim proposal
+# ============================================================================
+# sample_birth_param / birth_param_logpdf with Val{:ρ} delegate to the
+# corresponding plural versions, enabling Resample(proposal) as a
+# fixed-dimension proposal for any supported birth proposal.
+
+function sample_birth_param(
+    model::PoissonPopulationRates,
+    ::Val{:ρ},
+    proposal::BirthProposal,
+    S_i::Vector{Int},
+    state::PoissonPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesPriors
+)
+    params, lq = sample_birth_params(model, proposal, S_i, state, data, priors)
+    return params.ρ, lq
+end
+
+function birth_param_logpdf(
+    model::PoissonPopulationRates,
+    ::Val{:ρ},
+    proposal::BirthProposal,
+    ρ_val,
+    S_i::Vector{Int},
+    state::PoissonPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesPriors
+)
+    return birth_params_logpdf(model, proposal, (ρ = ρ_val,), S_i, state, data, priors)
+end
