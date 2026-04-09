@@ -96,6 +96,37 @@ end
 requires_population(::PoissonPopulationRates) = true
 
 # ============================================================================
+# RJMCMC Interface
+# ============================================================================
+
+cluster_param_dicts(state::PoissonPopulationRatesState) = (ρ = state.ρ_dict,)
+
+# PriorProposal samples from the conjugate posterior: Gamma(ρ_a + S_k, 1/(ρ_b + sum_P_k))
+function sample_birth_params(::PoissonPopulationRates, ::PriorProposal,
+                             S_i::Vector{Int}, state::PoissonPopulationRatesState,
+                             data::CountDataWithPopulation, priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    Q = Gamma(priors.ρ_a + S_k, 1.0 / (priors.ρ_b + sum_P))
+    ρ_new = rand(Q)
+    return (ρ = ρ_new,), logpdf(Q, ρ_new)
+end
+
+function birth_params_logpdf(::PoissonPopulationRates, ::PriorProposal,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonPopulationRatesState, data::CountDataWithPopulation,
+                             priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    Q = Gamma(priors.ρ_a + S_k, 1.0 / (priors.ρ_b + sum_P))
+    return logpdf(Q, params_old.ρ)
+end
+
+# ============================================================================
 # Table Contribution
 # ============================================================================
 
@@ -126,8 +157,10 @@ function table_contribution(
 
     log_lik = log_P_term + S_k * log(ρ) - sum_P * ρ - sum(loggamma.(view(y, table) .+ 1))
 
-    # Gamma prior on ρ
-    log_prior = (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ
+    # Complete Gamma prior on ρ (normalising constant must be included: it appears
+    # once per cluster, so it does not cancel in birth/death acceptance ratios)
+    log_prior = (priors.ρ_a - 1) * log(ρ) - priors.ρ_b * ρ +
+                priors.ρ_a * log(priors.ρ_b) - loggamma(priors.ρ_a)
 
     return log_lik + log_prior
 end
@@ -196,8 +229,8 @@ function update_params!(
     data::CountDataWithPopulation,
     priors::PoissonPopulationRatesPriors,
     tables::Vector{Vector{Int}},
-    log_DDCRP::AbstractMatrix,
-    opts::MCMCOptions
+    ::AbstractMatrix,
+    ::MCMCOptions
 )
     update_cluster_rates!(model, state, data, priors, tables)
 end
@@ -270,4 +303,37 @@ function extract_samples!(
             samples.ρ[iter, i] = ρ_val
         end
     end
+end
+
+# ============================================================================
+# Per-parameter dispatch — required by Resample fixed-dim proposal
+# ============================================================================
+# sample_birth_param / birth_param_logpdf with Val{:ρ} delegate to the
+# corresponding plural versions, enabling Resample(proposal) as a
+# fixed-dimension proposal for any supported birth proposal.
+
+function sample_birth_param(
+    model::PoissonPopulationRates,
+    ::Val{:ρ},
+    proposal::BirthProposal,
+    S_i::Vector{Int},
+    state::PoissonPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesPriors
+)
+    params, lq = sample_birth_params(model, proposal, S_i, state, data, priors)
+    return params.ρ, lq
+end
+
+function birth_param_logpdf(
+    model::PoissonPopulationRates,
+    ::Val{:ρ},
+    proposal::BirthProposal,
+    ρ_val,
+    S_i::Vector{Int},
+    state::PoissonPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::PoissonPopulationRatesPriors
+)
+    return birth_params_logpdf(model, proposal, (ρ = ρ_val,), S_i, state, data, priors)
 end

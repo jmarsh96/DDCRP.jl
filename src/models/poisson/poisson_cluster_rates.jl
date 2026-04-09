@@ -151,9 +151,11 @@ function table_contribution(
     n_k = length(table)
     S_k = sum(view(y, table))
 
-    # Poisson likelihood + Gamma prior on λ
+    # Poisson likelihood + complete Gamma prior on λ (normalising constant included:
+    # it appears once per cluster so it does not cancel in birth/death moves)
     log_lik = S_k * log(λ) - n_k * λ - sum(loggamma.(view(y, table) .+ 1))
-    log_prior = (priors.λ_a - 1) * log(λ) - priors.λ_b * λ
+    log_prior = (priors.λ_a - 1) * log(λ) - priors.λ_b * λ +
+                priors.λ_a * log(priors.λ_b) - loggamma(priors.λ_a)
 
     return log_lik + log_prior
 end

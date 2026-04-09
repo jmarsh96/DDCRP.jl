@@ -128,27 +128,6 @@ requires_population(::NBPopulationRates) = true
 
 cluster_param_dicts(state::NBPopulationRatesState) = (γ = state.γ_dict,)
 
-"""
-    fixed_dim_params(model::NBPopulationRates, S_i, table_old, table_new, state, data, priors, opts)
-
-Fixed-dimensional parameter update when moving set S_i transfers between existing clusters.
-Uses NoUpdate strategy: cluster rates are kept at current values (corrected by the
-next conjugate Gibbs step in update_params!).
-"""
-function fixed_dim_params(
-    ::NBPopulationRates,
-    S_i::Vector{Int},
-    table_old::Vector{Int},
-    table_new::Vector{Int},
-    state::NBPopulationRatesState,
-    data::CountDataWithPopulation,
-    priors::NBPopulationRatesPriors,
-    opts::MCMCOptions
-)
-    γ_depleted  = state.γ_dict[table_old]
-    γ_augmented = state.γ_dict[table_new]
-    return (γ = γ_depleted,), (γ = γ_augmented,), 0.0
-end
 
 """
     sample_birth_params(model::NBPopulationRates, ::PriorProposal, S_i, state, data, priors)
@@ -166,8 +145,9 @@ function sample_birth_params(
     priors::NBPopulationRatesPriors
 )
     r    = state.r
-    n_Si = length(S_i)
-    Λ_Si = sum(state.λ[i] for i in S_i)
+    mask = data.missing_mask
+    n_Si = count(i -> !mask[i], S_i)
+    Λ_Si = sum(state.λ[i] for i in S_i if !mask[i]; init=0.0)
 
     α_post = n_Si * r + priors.γ_a
     β_post = r * Λ_Si + priors.γ_b
@@ -192,13 +172,217 @@ function birth_params_logpdf(
     priors::NBPopulationRatesPriors
 )
     r    = state.r
-    n_Si = length(S_i)
-    Λ_Si = sum(state.λ[i] for i in S_i)
+    mask = data.missing_mask
+    n_Si = count(i -> !mask[i], S_i)
+    Λ_Si = sum(state.λ[i] for i in S_i if !mask[i]; init=0.0)
 
     α_post = n_Si * r + priors.γ_a
     β_post = r * Λ_Si + priors.γ_b
     Q      = InverseGamma(α_post, β_post)
     return logpdf(Q, params_old.γ)
+end
+
+# --- FixedDistributionProposal ---
+# Samples γ_new from a user-specified fixed distribution Q = prop.dists[1],
+# e.g. FixedDistributionProposal([Exponential(0.01)]).
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::FixedDistributionProposal,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    Q     = prop.dists[1]
+    γ_new = rand(Q)
+    return (γ = γ_new,), logpdf(Q, γ_new)
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::FixedDistributionProposal,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    return logpdf(prop.dists[1], params_old.γ)
+end
+
+# --- LogNormalMomentMatch ---
+# Proposes γ on the log scale: log(γ) ~ Normal(log(mean(λ_Si)), prop.σ[1]).
+# Since E[λ_i | γ_k] = γ_k, the mean of λ values in S_i is a natural moment estimate.
+# Falls back to prior mean for empty S_i.
+# Jacobian: logpdf_γ = logpdf_log_γ - log(γ).
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::LogNormalMomentMatch,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    mask     = data.missing_mask
+    S_i_obs  = filter(i -> !mask[i], S_i)
+    λ_center = isempty(S_i_obs) ? priors.γ_b / max(priors.γ_a - 1.0, 0.01) :
+                                   mean(state.λ[j] for j in S_i_obs)
+    μ_log    = log(max(λ_center, 1e-8))
+    Q        = Normal(μ_log, prop.σ[1])
+    log_γ    = rand(Q)
+    γ_new    = exp(log_γ)
+    return (γ = γ_new,), logpdf(Q, log_γ) - log_γ
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::LogNormalMomentMatch,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    params_old.γ <= 0 && return -Inf
+    mask     = data.missing_mask
+    S_i_obs  = filter(i -> !mask[i], S_i)
+    λ_center = isempty(S_i_obs) ? priors.γ_b / max(priors.γ_a - 1.0, 0.01) :
+                                   mean(state.λ[j] for j in S_i_obs)
+    μ_log = log(max(λ_center, 1e-8))
+    Q     = Normal(μ_log, prop.σ[1])
+    return logpdf(Q, log(params_old.γ)) - log(params_old.γ)
+end
+
+# --- InverseGammaMomentMatch ---
+# Matches an InverseGamma to the empirical moments of existing γ_k values across
+# all current clusters. Falls back to the prior when fewer than prop.min_size
+# clusters exist or moment matching is degenerate.
+function sample_birth_params(
+    ::NBPopulationRates,
+    prop::InverseGammaMomentMatch,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    γ_vals = collect(values(state.γ_dict))
+    if length(γ_vals) >= prop.min_size
+        μ_γ  = mean(γ_vals)
+        σ²_γ = var(γ_vals)
+        if σ²_γ > 0 && μ_γ > 0
+            α_ig = 2.0 + μ_γ^2 / σ²_γ
+            β_ig = μ_γ * (α_ig - 1.0)
+            Q    = InverseGamma(α_ig, β_ig)
+            γ_new = rand(Q)
+            return (γ = γ_new,), logpdf(Q, γ_new)
+        end
+    end
+    Q = InverseGamma(priors.γ_a, priors.γ_b)
+    γ_new = rand(Q)
+    return (γ = γ_new,), logpdf(Q, γ_new)
+end
+
+function birth_params_logpdf(
+    ::NBPopulationRates,
+    prop::InverseGammaMomentMatch,
+    params_old::NamedTuple,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    γ_vals = collect(values(state.γ_dict))
+    if length(γ_vals) >= prop.min_size
+        μ_γ  = mean(γ_vals)
+        σ²_γ = var(γ_vals)
+        if σ²_γ > 0 && μ_γ > 0
+            α_ig = 2.0 + μ_γ^2 / σ²_γ
+            β_ig = μ_γ * (α_ig - 1.0)
+            return logpdf(InverseGamma(α_ig, β_ig), params_old.γ)
+        end
+    end
+    return logpdf(InverseGamma(priors.γ_a, priors.γ_b), params_old.γ)
+end
+
+# ============================================================================
+# Per-parameter dispatch — required by Resample fixed-dim proposal
+# ============================================================================
+# sample_birth_param / birth_param_logpdf with Val{:γ} delegate to the
+# corresponding plural sample_birth_params / birth_params_logpdf, enabling
+# Resample(proposal) as a fixed-dimension proposal for any supported birth proposal.
+
+function sample_birth_param(
+    model::NBPopulationRates,
+    ::Val{:γ},
+    proposal::BirthProposal,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    params, lq = sample_birth_params(model, proposal, S_i, state, data, priors)
+    return params.γ, lq
+end
+
+function birth_param_logpdf(
+    model::NBPopulationRates,
+    ::Val{:γ},
+    proposal::BirthProposal,
+    γ_val,
+    S_i::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    priors::NBPopulationRatesPriors
+)
+    return birth_params_logpdf(model, proposal, (γ = γ_val,), S_i, state, data, priors)
+end
+
+# ============================================================================
+# Fixed-dimension proposals
+# ============================================================================
+
+# WeightedMean override: use mean(λ_Si) rather than mean(y_Si) as the summary
+# statistic for γ, since E[λ_i | γ_k, r] = γ_k makes the λ mean the natural
+# estimate of the cluster rate. The deterministic bijection and Jacobian
+# follow the same derivation as the generic WeightedMean.
+function fixed_dim_param(
+    ::NBPopulationRates,
+    ::Val{:γ},
+    ::WeightedMean,
+    S_i::Vector{Int},
+    table_depl::Vector{Int},
+    table_aug::Vector{Int},
+    state::NBPopulationRatesState,
+    data::CountDataWithPopulation,
+    ::NBPopulationRatesPriors
+)
+    γ_depl  = state.γ_dict[table_depl]
+    γ_aug   = state.γ_dict[table_aug]
+    mask    = data.missing_mask
+
+    # Only observed members contribute to the weighted mean update.
+    S_i_obs  = filter(i -> !mask[i], S_i)
+    n_Si     = length(S_i_obs)
+    λ̄_Si     = isempty(S_i_obs) ? 0.0 : mean(state.λ[j] for j in S_i_obs)
+    n_depl   = count(i -> !mask[i], table_depl)
+    n_aug    = count(i -> !mask[i], table_aug)
+
+    γ_aug_new   = (n_aug * γ_aug + n_Si * λ̄_Si) / (n_aug + n_Si)
+    log_jac_aug = log(n_aug) - log(n_aug + n_Si)
+
+    n_remaining = n_depl - n_Si
+    if n_remaining > 0
+        γ_depl_new = (n_depl * γ_depl - n_Si * λ̄_Si) / n_remaining
+        if γ_depl_new <= 0
+            return γ_depl_new, γ_aug_new, -Inf
+        end
+        lpr = log_jac_aug + log(n_depl) - log(n_remaining)
+    else
+        γ_depl_new = γ_depl   # depleted cluster will be empty; value unused
+        lpr        = log_jac_aug
+    end
+
+    return γ_depl_new, γ_aug_new, lpr
 end
 
 # ============================================================================
@@ -209,12 +393,15 @@ end
     table_contribution(model::NBPopulationRates, table, state, data, priors)
 
 Compute log-contribution of a table conditional on explicit λ_i and γ_k.
+Missing observations have their λ_i integrated out analytically (∫ Gamma dλ_i = 1),
+so only observed members contribute.
 
-TC_k = Σ_{i∈k} [ y_i·log(P_i) − log Γ(y_i+1) ]
-     + Σ_{i∈k} [ (y_i + r − 1)·log(λ_i) − P_i·λ_i ]
-     + n_k·(r·log(r) − log Γ(r))
+TC_k = Σ_{i∈k,obs} [ y_i·log(P_i) − log Γ(y_i+1) ]
+     + Σ_{i∈k,obs} [ (y_i + r − 1)·log(λ_i) − P_i·λ_i ]
+     + n_obs·(r·log(r) − log Γ(r))
      + γ_a·log(γ_b) − log Γ(γ_a)
-     − (n_k·r + γ_a + 1)·log(γ_k) − (r·Λ_k + γ_b)/γ_k
+     − (n_obs·r + γ_a + 1)·log(γ_k) − (r·Λ_obs + γ_b)/γ_k
+where n_obs and Λ_obs count observed members only.
 """
 function table_contribution(
     ::NBPopulationRates,
@@ -229,16 +416,30 @@ function table_contribution(
     r  = state.r
     n_k = length(table)
 
+    # γ must be positive (InverseGamma support); guard against temporarily invalid
+    # values that can arise during WeightedMean fixed-dim moves before rejection.
+    γ <= 0 && return -Inf
+
+    mask = data.missing_mask
     y_k = view(y, table)
     P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
     λ_k = view(state.λ, table)
-    Λ_k = sum(λ_k)
 
-    poisson_const = sum(Float64(y_k[j]) * log(P_k[j]) - loggamma(Float64(y_k[j]) + 1) for j in 1:n_k)
-    lambda_terms  = sum((Float64(y_k[j]) + r - 1) * log(λ_k[j]) - P_k[j] * λ_k[j] for j in 1:n_k)
-    gamma_norm    = n_k * (r * log(r) - loggamma(r))
+    # Missing obs: λ_i integrated out analytically, contributes nothing.
+    poisson_const = 0.0
+    lambda_terms  = 0.0
+    n_obs         = 0
+    Λ_obs         = 0.0
+    for (j, i) in enumerate(table)
+        mask[i] && continue
+        n_obs         += 1
+        Λ_obs         += λ_k[j]
+        poisson_const += Float64(y_k[j]) * log(P_k[j]) - loggamma(Float64(y_k[j]) + 1)
+        lambda_terms  += (Float64(y_k[j]) + r - 1) * log(λ_k[j]) - P_k[j] * λ_k[j]
+    end
+    gamma_norm    = n_obs * (r * log(r) - loggamma(r))
     ig_norm       = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
-    gamma_kernel  = -(n_k * r + priors.γ_a + 1) * log(γ) - (r * Λ_k + priors.γ_b) / γ
+    gamma_kernel  = -(n_obs * r + priors.γ_a + 1) * log(γ) - (r * Λ_obs + priors.γ_b) / γ
 
     return poisson_const + lambda_terms + gamma_norm + ig_norm + gamma_kernel
 end
@@ -282,12 +483,14 @@ function update_λ_gibbs!(
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}}
 )
-    y = observations(data)
-    P = population(data)
-    r = state.r
+    y    = observations(data)
+    P    = population(data)
+    mask = data.missing_mask
+    r    = state.r
     for table in tables
         γ = state.γ_dict[sort(table)]
         for i in table
+            mask[i] && continue  # λ_i integrated out analytically; skip
             P_i    = P isa Int ? Float64(P) : Float64(P[i])
             α_post = Float64(y[i]) + r
             β_post = P_i + r / γ
@@ -309,13 +512,14 @@ function update_γ_ig_rates!(
     priors::NBPopulationRatesPriors,
     tables::Vector{Vector{Int}}
 )
-    r = state.r
+    r    = state.r
+    mask = data.missing_mask
     for table in tables
-        key = sort(table)
-        n_k  = length(table)
-        Λ_k  = sum(state.λ[i] for i in table)
-        α_post = n_k * r + priors.γ_a
-        β_post = r * Λ_k + priors.γ_b
+        key   = sort(table)
+        n_obs = count(i -> !mask[i], table)
+        Λ_obs = sum(state.λ[i] for i in table if !mask[i]; init=0.0)
+        α_post = n_obs * r + priors.γ_a
+        β_post = r * Λ_obs + priors.γ_b
         state.γ_dict[key] = rand(InverseGamma(α_post, β_post))
     end
 end
@@ -404,14 +608,15 @@ function initialise_state(
     P_vec = P isa Int ? fill(Float64(P), n) : Float64.(P)
     λ0    = [max(Float64(y[i]) / P_vec[i], 0.01) for i in 1:n]
 
-    # Initialise γ_k from conjugate posterior given λ0
+    # Initialise γ_k from conjugate posterior given λ0 (observed members only)
+    mask   = data.missing_mask
     γ_dict = Dict{Vector{Int}, Float64}()
     for table in tables
         key    = sort(table)
-        n_k    = length(table)
-        Λ_k    = sum(λ0[i] for i in table)
-        α_post = n_k * r0 + priors.γ_a
-        β_post = r0 * Λ_k + priors.γ_b
+        n_obs  = count(i -> !mask[i], table)
+        Λ_obs  = sum(λ0[i] for i in table if !mask[i]; init=0.0)
+        α_post = n_obs * r0 + priors.γ_a
+        β_post = r0 * Λ_obs + priors.γ_b
         γ_dict[key] = rand(InverseGamma(α_post, β_post))
     end
 
@@ -459,3 +664,4 @@ function extract_samples!(
         end
     end
 end
+

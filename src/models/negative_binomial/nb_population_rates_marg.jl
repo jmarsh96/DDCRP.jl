@@ -123,11 +123,14 @@ requires_population(::NBPopulationRatesMarg) = true
     table_contribution(model::NBPopulationRatesMarg, table, state, data, priors)
 
 Compute log-contribution of a table after analytically marginalising γ_k.
+Missing observations have their λ_i integrated out analytically (prior integrates
+to 1, no likelihood), so only observed members contribute.
 
-TC_k = Σ_{i∈k} [ y_i·log(P_i·λ_i) − P_i·λ_i − log Γ(y_i+1) ]
-     + n_k·(r·log(r) − log Γ(r)) + (r−1)·Σ log(λ_i)
-     + log Γ(n_k·r + γ_a) − (n_k·r + γ_a)·log(r·Λ_k + γ_b)
+TC_k = Σ_{i∈k,obs} [ y_i·log(P_i·λ_i) − P_i·λ_i − log Γ(y_i+1) ]
+     + n_obs·(r·log(r) − log Γ(r)) + (r−1)·Σ_{obs} log(λ_i)
+     + log Γ(n_obs·r + γ_a) − (n_obs·r + γ_a)·log(r·Λ_obs + γ_b)
      + γ_a·log(γ_b) − log Γ(γ_a)
+where n_obs and Λ_obs count observed members only.
 """
 function table_contribution(
     ::NBPopulationRatesMarg,
@@ -136,22 +139,36 @@ function table_contribution(
     data::CountDataWithPopulation,
     priors::NBPopulationRatesMargPriors
 )
-    y   = observations(data)
-    P   = population(data)
-    r   = state.r
-    n_k = length(table)
+    y    = observations(data)
+    P    = population(data)
+    mask = data.missing_mask
+    r    = state.r
 
-    y_k = view(y, table)
-    P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
+    P_k = P isa Int ? fill(Float64(P), length(table)) : Float64.(view(P, table))
     λ_k = view(state.λ, table)
-    Λ_k = sum(λ_k)
 
-    poisson_terms = sum(Float64(y_k[j]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
-                        loggamma(Float64(y_k[j]) + 1) for j in 1:n_k)
-    gamma_norm    = n_k * (r * log(r) - loggamma(r))
-    lambda_power  = (r - 1) * sum(log(λ_k[j]) for j in 1:n_k)
-    ig_integral   = loggamma(n_k * r + priors.γ_a) - (n_k * r + priors.γ_a) * log(r * Λ_k + priors.γ_b)
-    ig_norm       = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
+    # Missing obs: λ_i integrated out analytically (∫ Gamma dλ_i = 1), contributes nothing.
+    # Only observed members contribute to all terms.
+    poisson_terms    = 0.0
+    lambda_power_obs = 0.0
+    Λ_obs            = 0.0
+    n_obs            = 0
+
+    for (j, i) in enumerate(table)
+        mask[i] && continue
+        n_obs            += 1
+        Λ_obs            += λ_k[j]
+        poisson_terms    += Float64(y[i]) * log(P_k[j] * λ_k[j]) - P_k[j] * λ_k[j] -
+                            loggamma(Float64(y[i]) + 1)
+        lambda_power_obs += log(λ_k[j])
+    end
+
+    n_obs == 0 && return 0.0
+
+    gamma_norm   = n_obs * (r * log(r) - loggamma(r))
+    lambda_power = (r - 1) * lambda_power_obs
+    ig_integral  = loggamma(n_obs * r + priors.γ_a) - (n_obs * r + priors.γ_a) * log(r * Λ_obs + priors.γ_b)
+    ig_norm      = priors.γ_a * log(priors.γ_b) - loggamma(priors.γ_a)
 
     return poisson_terms + gamma_norm + lambda_power + ig_integral + ig_norm
 end
@@ -196,35 +213,46 @@ function update_λ!(
     tables::Vector{Vector{Int}};
     prop_sd::Float64 = 0.3
 )
-    y = observations(data)
-    P = population(data)
-    r = state.r
+    y    = observations(data)
+    P    = population(data)
+    mask = data.missing_mask
+    r    = state.r
 
     for table in tables
         n_k = length(table)
         y_k = view(y, table)
         P_k = P isa Int ? fill(Float64(P), n_k) : Float64.(view(P, table))
         λ_k = view(state.λ, table)
-        Λ_k = sum(λ_k)
+
+        # Only observed members enter the IG integral; missing λ_i are integrated out.
+        n_obs = 0
+        Λ_obs = 0.0
+        for (j, i) in enumerate(table)
+            mask[i] && continue
+            n_obs += 1
+            Λ_obs += λ_k[j]
+        end
 
         for (j, i) in enumerate(table)
-            λ_old  = state.λ[i]
-            λ_can  = exp(log(λ_old) + rand(Normal(0.0, prop_sd)))
+            mask[i] && continue  # λ_i integrated out analytically; skip
 
-            Λ_new = Λ_k - λ_old + λ_can
+            λ_old = state.λ[i]
+            λ_can = exp(log(λ_old) + rand(Normal(0.0, prop_sd)))
+            Λ_new = Λ_obs - λ_old + λ_can
 
-            # O(1) delta in TC: Poisson + Gamma power + IG integral terms
-            ΔTC = Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old) +
+            poisson_delta = Float64(y_k[j]) * log(λ_can / λ_old) - P_k[j] * (λ_can - λ_old)
+
+            # O(1) delta in TC using observed-only n_obs and Λ_obs
+            ΔTC = poisson_delta +
                   (r - 1) * log(λ_can / λ_old) -
-                  (n_k * r + priors.γ_a) * (log(r * Λ_new + priors.γ_b) -
-                                             log(r * Λ_k  + priors.γ_b))
+                  (n_obs * r + priors.γ_a) * (log(r * Λ_new + priors.γ_b) -
+                                               log(r * Λ_obs  + priors.γ_b))
 
-            # Log-scale proposal Jacobian: log(λ_can) - log(λ_old)
             log_α = ΔTC + log(λ_can) - log(λ_old)
 
             if log(rand()) < log_α
                 state.λ[i] = λ_can
-                Λ_k = Λ_new
+                Λ_obs = Λ_new
             end
         end
     end
