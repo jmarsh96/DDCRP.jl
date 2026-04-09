@@ -18,6 +18,7 @@
 using DDCRP
 using CSV, DataFrames, Distances
 using Statistics, StatsBase, LinearAlgebra
+using MultivariateStats
 using Random
 using Printf
 using JLD2
@@ -45,6 +46,56 @@ n     = length(y)
         n, minimum(y), maximum(y), minimum(P), maximum(P))
 
 # ============================================================================
+# PCA plot: counties in covariate PC space, coloured by referral rate
+# ============================================================================
+
+rate = y ./ P
+
+pca_model = fit(PCA, X_std'; maxoutdim=2)
+PCs       = MultivariateStats.transform(pca_model, X_std')'   # (n × 2)
+
+pev = principalvars(pca_model) ./ tvar(pca_model) .* 100
+
+p_pca = scatter(
+    PCs[:, 1], PCs[:, 2];
+    zcolor      = rate,
+    color       = :viridis,
+    colorbar_title = "Referral rate (y/P)",
+    marker      = :circle,
+    markersize  = 6,
+    markerstrokewidth = 0.5,
+    label       = nothing,
+    xlabel      = @sprintf("PC1 (%.1f%% var)", pev[1]),
+    ylabel      = @sprintf("PC2 (%.1f%% var)", pev[2]),
+    title       = "Counties in covariate PC space\n(NRM Q3 2025, coloured by referral rate)",
+    size        = (700, 550),
+    margin      = 8Plots.mm,
+)
+
+pca_path = joinpath(@__DIR__, "nrm_county_pca.png")
+savefig(p_pca, pca_path)
+println("PCA plot saved to $pca_path")
+display(p_pca)
+
+p_pc1_rate = scatter(
+    PCs[:, 1], rate;
+    marker            = :circle,
+    markersize        = 6,
+    markerstrokewidth = 0.5,
+    label             = nothing,
+    xlabel            = @sprintf("PC1 (%.1f%% var)", pev[1]),
+    ylabel            = "Referral rate (y/P)",
+    title             = "PC1 vs referral rate\n(NRM Q3 2025)",
+    size              = (650, 480),
+    margin            = 8Plots.mm,
+)
+
+pc1_rate_path = joinpath(@__DIR__, "nrm_county_pc1_rate.png")
+savefig(p_pc1_rate, pc1_rate_path)
+println("PC1 vs rate plot saved to $pc1_rate_path")
+display(p_pc1_rate)
+
+# ============================================================================
 # Shared settings
 # ============================================================================
 
@@ -69,7 +120,7 @@ base_opts = MCMCOptions(
     verbose      = false,
     infer_params = Dict(
         :s_ddcrp  => false,
-        :r        => false,
+        :r        => true,
         :α_ddcrp  => true,
     ),
 )
@@ -164,6 +215,145 @@ for r in results
 end
 
 # ============================================================================
+# Print and plot MAP cluster assignments
+# ============================================================================
+
+county_names = df.county
+
+for r in results
+    c_post = r.samples.c[(burn+1):end, :]
+    z_map  = point_estimate_clustering(c_post; method=:MAP)
+    k_map  = maximum(z_map)
+
+    println("\n=== MAP clustering: $(r.label) (K=$k_map) ===")
+    for k in 1:k_map
+        members = county_names[z_map .== k]
+        println(@sprintf("  Cluster %2d (%2d counties): %s", k, length(members),
+                         join(members, ", ")))
+    end
+end
+
+# Add z_map to each result
+results = [merge(r, (z_map=point_estimate_clustering(
+    r.samples.c[(burn+1):end, :]; method=:MAP),)) for r in results]
+
+# Write MAP assignments to CSV for the Python geography map script
+map_asgn_path = joinpath(dirname(@__DIR__), "results", "nrm_county_analysis", "map_assignments.csv")
+open(map_asgn_path, "w") do io
+    println(io, "county,proposal,cluster")
+    for r in results
+        for (i, county) in enumerate(county_names)
+            println(io, "\"$(county)\",\"$(r.label)\",$(r.z_map[i])")
+        end
+    end
+end
+println("MAP assignments written to $map_asgn_path")
+
+# Heatmap-style grid: proposals × counties, colour = cluster label
+n_props  = length(results)
+max_k    = maximum(maximum(r.z_map) for r in results)
+asgn_mat = hcat([r.z_map for r in results]...)'   # (n_props × n_counties)
+
+# Sort counties by MAP cluster of first (Gibbs NB) result for visual coherence
+sort_idx  = sortperm(results[1].z_map)
+asgn_sort = asgn_mat[:, sort_idx]
+county_sort = county_names[sort_idx]
+
+p_map = heatmap(
+    asgn_sort,
+    yticks  = (1:n_props, [r.label for r in results]),
+    xticks  = (1:5:n, county_sort[1:5:end]),
+    xrotation = 45,
+    title   = "MAP cluster assignments\n(NRM Q3 2025, sorted by NB Marg cluster)",
+    xlabel  = "County",
+    ylabel  = "Proposal",
+    color   = :tab10,
+    clims   = (1, max(max_k, 10)),
+    colorbar_title = "Cluster",
+    size    = (1400, 400),
+    margin  = 10Plots.mm,
+    yflip   = false,
+)
+
+map_path = joinpath(@__DIR__, "nrm_county_map_assignments.png")
+savefig(p_map, map_path)
+println("\nMAP assignments heatmap saved to $map_path")
+display(p_map)
+
+# PC-space scatter coloured by MAP cluster — one panel per proposal
+cluster_colors = [:black, :steelblue, :darkorange, :forestgreen,
+                  :purple, :crimson, :teal, :gold, :hotpink, :gray]
+
+pca_panels = [
+    scatter(
+        PCs[:, 1], PCs[:, 2];
+        zcolor            = r.z_map,
+        color             = :tab10,
+        clims             = (1, max(maximum(r.z_map), 10)),
+        colorbar          = false,
+        marker            = :circle,
+        markersize        = 5,
+        markerstrokewidth = 0.5,
+        label             = nothing,
+        title             = r.label,
+        xlabel            = "PC1",
+        ylabel            = "PC2",
+    )
+    for r in results
+]
+
+p_pca_map = plot(pca_panels...;
+    layout = (2, div(n_props + 1, 2)),
+    size   = (300 * div(n_props + 1, 2), 550),
+    margin = 6Plots.mm,
+    plot_title = "MAP cluster assignments in covariate PC space\n(NRM Q3 2025)",
+)
+
+pca_map_path = joinpath(@__DIR__, "nrm_county_pca_map.png")
+savefig(p_pca_map, pca_map_path)
+println("PCA MAP plot saved to $pca_map_path")
+display(p_pca_map)
+
+# PC1 vs referral rate, coloured by MAP cluster — one panel per proposal
+pc1_rate_panels = [
+    scatter(
+        PCs[:, 1], rate;
+        zcolor            = r.z_map,
+        color             = :tab10,
+        clims             = (1, max(maximum(r.z_map), 10)),
+        colorbar          = false,
+        marker            = :circle,
+        markersize        = 5,
+        markerstrokewidth = 0.5,
+        label             = nothing,
+        title             = r.label,
+        xlabel            = "PC1",
+        ylabel            = "Referral rate (y/P)",
+    )
+    for r in results
+]
+
+p_pc1_rate_map = plot(pc1_rate_panels...;
+    layout     = (2, div(n_props + 1, 2)),
+    size       = (300 * div(n_props + 1, 2), 550),
+    margin     = 6Plots.mm,
+    plot_title = "PC1 vs referral rate, coloured by MAP cluster\n(NRM Q3 2025)",
+)
+
+pc1_rate_map_path = joinpath(@__DIR__, "nrm_county_pc1_rate_map.png")
+savefig(p_pc1_rate_map, pc1_rate_map_path)
+println("PC1 vs rate MAP plot saved to $pc1_rate_map_path")
+display(p_pc1_rate_map)
+
+# ============================================================================
+# Geography map via Python (geopandas choropleth)
+# ============================================================================
+
+println("\nGenerating geography map ...")
+map_script = joinpath(@__DIR__, "plot_nrm_map.py")
+run(`uv run $map_script`)
+
+# ============================================================================
 # Plot: posterior P(K) for NB and Poisson separately + K trace plots
 # ============================================================================
 
@@ -241,3 +431,7 @@ for r in results
     @save fpath samples k_post
     println("Saved $(r.label) -> $fpath")
 end
+
+
+
+plot(calculate_n_clusters(results[5].samples.c[(burn+1):end, :]))

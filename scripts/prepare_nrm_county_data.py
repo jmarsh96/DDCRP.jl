@@ -61,7 +61,7 @@ CACHE_DIR   = os.path.join(DATA_DIR, ".cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 ODS_FILE   = os.path.join(DATA_DIR,
-    "national-referral-mechanism-statistics-uk-quarter-3-2025-jul-to-sep-tables.ods")
+    "national-referral-mechanism-statistics-uk-quarter-4-2025-oct-to-dec-tables.ods")
 OUT_FILE   = os.path.join(DATA_DIR, "nrm_county_data.csv")
 
 
@@ -434,6 +434,16 @@ COUNTY_LOOKUP = {
         "pop_codes": ["E06000017"],
         "imd_codes": ["E06000017"],
     },
+    "Isle of Wight": {
+        "nation": "england",
+        "pop_codes": ["E06000046"],
+        "imd_codes": ["E06000046"],
+    },
+    "City and County of the City of London": {
+        "nation": "england",
+        "pop_codes": ["E09000001"],
+        "imd_codes": ["E09000001"],
+    },
 
     # =========================================================
     # WALES  (pre-1996 historic counties → modern UAs)
@@ -578,6 +588,76 @@ COUNTY_LOOKUP = {
         # Historic Wigtown county is now part of Dumfries and Galloway
         "pop_codes": ["S12000006"],       # Dumfries and Galloway
     },
+    "Dumfries": {
+        "nation": "scotland",
+        "pop_codes": ["S12000006"],       # Dumfries and Galloway
+    },
+    "The Stewartry of Kirkcudbright": {
+        "nation": "scotland",
+        "pop_codes": ["S12000006"],       # Dumfries and Galloway
+    },
+    "Ayrshire and Arran": {
+        "nation": "scotland",
+        # East Ayrshire + North Ayrshire + South Ayrshire
+        "pop_codes": ["S12000008", "S12000047", "S12000028"],
+    },
+    "East Lothian": {
+        "nation": "scotland",
+        "pop_codes": ["S12000010"],
+    },
+    "Midlothian": {
+        "nation": "scotland",
+        "pop_codes": ["S12000019"],
+    },
+    "Roxburgh, Ettrick and Lauderdale": {
+        "nation": "scotland",
+        "pop_codes": ["S12000026"],       # Scottish Borders
+    },
+    "Berwickshire": {
+        "nation": "scotland",
+        "pop_codes": ["S12000026"],       # Scottish Borders
+    },
+    "Tweeddale": {
+        "nation": "scotland",
+        "pop_codes": ["S12000026"],       # Scottish Borders
+    },
+    "Western Isles": {
+        "nation": "scotland",
+        "pop_codes": ["S12000013"],       # Na h-Eileanan Siar
+    },
+    "Argyll and Bute": {
+        "nation": "scotland",
+        "pop_codes": ["S12000035"],
+    },
+    "Orkney": {
+        "nation": "scotland",
+        "pop_codes": ["S12000023"],       # Orkney Islands
+    },
+    "Shetland": {
+        "nation": "scotland",
+        "pop_codes": ["S12000027"],       # Shetland Islands
+    },
+    "Caithness": {
+        "nation": "scotland",
+        "pop_codes": ["S12000017"],       # Highland
+    },
+    "Sutherland": {
+        "nation": "scotland",
+        "pop_codes": ["S12000017"],       # Highland
+    },
+    "Nairn": {
+        "nation": "scotland",
+        "pop_codes": ["S12000017"],       # Highland
+    },
+    "Banffshire": {
+        "nation": "scotland",
+        # Banffshire straddles Moray (eastern) and Aberdeenshire (western)
+        "pop_codes": ["S12000020", "S12000034"],
+    },
+    "Kincardineshire": {
+        "nation": "scotland",
+        "pop_codes": ["S12000034"],       # Aberdeenshire
+    },
 
     # =========================================================
     # NORTHERN IRELAND
@@ -592,6 +672,24 @@ COUNTY_LOOKUP = {
     "County Derry / Londonderry": {
         "nation": "ni",
         "pop_codes": ["N09000005"],       # Derry City and Strabane
+    },
+    "County Armagh": {
+        "nation": "ni",
+        "pop_codes": ["N09000002"],       # Armagh City, Banbridge and Craigavon
+    },
+    "County Down": {
+        "nation": "ni",
+        # Newry, Mourne and Down + Ards and North Down
+        "pop_codes": ["N09000009", "N09000010"],
+    },
+    "County Fermanagh": {
+        "nation": "ni",
+        "pop_codes": ["N09000006"],       # Fermanagh and Omagh
+    },
+    "County Tyrone": {
+        "nation": "ni",
+        # Mid Ulster + Fermanagh and Omagh (Tyrone straddles both)
+        "pop_codes": ["N09000008", "N09000006"],
     },
 }
 
