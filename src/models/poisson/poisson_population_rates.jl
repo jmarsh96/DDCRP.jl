@@ -126,6 +126,72 @@ function birth_params_logpdf(::PoissonPopulationRates, ::PriorProposal,
     return logpdf(Q, params_old.ρ)
 end
 
+# NormalMomentMatch — log-Normal proposal centred at the MLE log(S_k / sum_P).
+# Uses the moving set's own sufficient statistics so the proposal is symmetric
+# across birth and death moves (no state look-up required).
+# Falls back to the prior mean when S_k = 0.
+function sample_birth_params(::PoissonPopulationRates, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::PoissonPopulationRatesState,
+                             data::CountDataWithPopulation, priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    ρ_mle = S_k > 0 ? S_k / sum_P : priors.ρ_a / priors.ρ_b
+    Q = Normal(log(ρ_mle), prop.σ[1])
+    log_ρ_new = rand(Q)
+    ρ_new = exp(log_ρ_new)
+    # Jacobian: d(log ρ)/dρ = 1/ρ  →  p(ρ) = p(log ρ) / ρ
+    log_q = logpdf(Q, log_ρ_new) - log_ρ_new
+    return (ρ = ρ_new,), log_q
+end
+
+function birth_params_logpdf(::PoissonPopulationRates, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonPopulationRatesState, data::CountDataWithPopulation,
+                             priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    ρ_mle = S_k > 0 ? S_k / sum_P : priors.ρ_a / priors.ρ_b
+    Q = Normal(log(ρ_mle), prop.σ[1])
+    log_ρ = log(params_old.ρ)
+    return logpdf(Q, log_ρ) - log_ρ
+end
+
+# LogNormalMomentMatch — log-Normal proposal centred at the conjugate posterior
+# mean log((ρ_a + S_k) / (ρ_b + sum_P)).  Approximates the conditional posterior
+# (Gamma) with a log-Normal whose centre is data-driven; σ[1] is a tuning parameter.
+function sample_birth_params(::PoissonPopulationRates, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::PoissonPopulationRatesState,
+                             data::CountDataWithPopulation, priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    ρ_post_mean = (priors.ρ_a + S_k) / (priors.ρ_b + sum_P)
+    Q = Normal(log(ρ_post_mean), prop.σ[1])
+    log_ρ_new = rand(Q)
+    ρ_new = exp(log_ρ_new)
+    log_q = logpdf(Q, log_ρ_new) - log_ρ_new
+    return (ρ = ρ_new,), log_q
+end
+
+function birth_params_logpdf(::PoissonPopulationRates, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonPopulationRatesState, data::CountDataWithPopulation,
+                             priors::PoissonPopulationRatesPriors)
+    y = observations(data)
+    P = population(data)
+    S_k   = sum(view(y, S_i))
+    sum_P = sum(view(P, S_i))
+    ρ_post_mean = (priors.ρ_a + S_k) / (priors.ρ_b + sum_P)
+    Q = Normal(log(ρ_post_mean), prop.σ[1])
+    log_ρ = log(params_old.ρ)
+    return logpdf(Q, log_ρ) - log_ρ
+end
+
 # ============================================================================
 # Table Contribution
 # ============================================================================
