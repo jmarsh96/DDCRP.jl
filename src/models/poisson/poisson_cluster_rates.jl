@@ -130,6 +130,74 @@ function birth_params_logpdf(::PoissonClusterRates, prop::FixedDistributionPropo
     return logpdf(prop.dists[1], params_old.λ)
 end
 
+# --- NormalMomentMatch: log-space proposal centred at MLE log(S_k/n_k) ---
+function sample_birth_params(::PoissonClusterRates, prop::NormalMomentMatch,
+                             S_i::Vector{Int}, state::PoissonClusterRatesState,
+                             data::CountData, priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    λ_mle = S_k > 0 ? S_k / n_k : priors.λ_a / priors.λ_b
+    Q = Normal(log(λ_mle), prop.σ[1])
+    log_λ = rand(Q)
+    λ_new = exp(log_λ)
+    return (λ = λ_new,), logpdf(Q, log_λ) - log_λ
+end
+
+function birth_params_logpdf(::PoissonClusterRates, prop::NormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonClusterRatesState, data::CountData,
+                             priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    λ_mle = S_k > 0 ? S_k / n_k : priors.λ_a / priors.λ_b
+    Q = Normal(log(λ_mle), prop.σ[1])
+    return logpdf(Q, log(params_old.λ)) - log(params_old.λ)
+end
+
+# --- LogNormalMomentMatch: log-space proposal centred at posterior mean ---
+function sample_birth_params(::PoissonClusterRates, prop::LogNormalMomentMatch,
+                             S_i::Vector{Int}, state::PoissonClusterRatesState,
+                             data::CountData, priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    λ_post_mean = (priors.λ_a + S_k) / (priors.λ_b + n_k)
+    Q = Normal(log(λ_post_mean), prop.σ[1])
+    log_λ = rand(Q)
+    λ_new = exp(log_λ)
+    return (λ = λ_new,), logpdf(Q, log_λ) - log_λ
+end
+
+function birth_params_logpdf(::PoissonClusterRates, prop::LogNormalMomentMatch,
+                             params_old::NamedTuple, S_i::Vector{Int},
+                             state::PoissonClusterRatesState, data::CountData,
+                             priors::PoissonClusterRatesPriors)
+    y = observations(data)
+    S_k = sum(view(y, S_i))
+    n_k = length(S_i)
+    λ_post_mean = (priors.λ_a + S_k) / (priors.λ_b + n_k)
+    Q = Normal(log(λ_post_mean), prop.σ[1])
+    return logpdf(Q, log(params_old.λ)) - log(params_old.λ)
+end
+
+# --- Val{:λ} singular dispatch: enables Resample(proposal) as fixed-dim proposal ---
+function sample_birth_param(model::PoissonClusterRates, ::Val{:λ},
+                            proposal::BirthProposal, S_i::Vector{Int},
+                            state::PoissonClusterRatesState, data::CountData,
+                            priors::PoissonClusterRatesPriors)
+    params, lq = sample_birth_params(model, proposal, S_i, state, data, priors)
+    return params.λ, lq
+end
+
+function birth_param_logpdf(model::PoissonClusterRates, ::Val{:λ},
+                            proposal::BirthProposal, λ_val,
+                            S_i::Vector{Int}, state::PoissonClusterRatesState,
+                            data::CountData, priors::PoissonClusterRatesPriors)
+    return birth_params_logpdf(model, proposal, (λ = λ_val,), S_i, state, data, priors)
+end
+
 # ============================================================================
 # Table Contribution
 # ============================================================================
