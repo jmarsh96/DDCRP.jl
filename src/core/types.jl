@@ -1,0 +1,392 @@
+# ============================================================================
+# Abstract Type Hierarchy for DDCRP Models
+# ============================================================================
+
+"""
+    LikelihoodModel
+
+Abstract supertype for all likelihood models in the DDCRP framework.
+Each model variant defines how cluster data contributes to the likelihood.
+"""
+abstract type LikelihoodModel end
+
+"""
+    PoissonModel <: LikelihoodModel
+
+Abstract type for Poisson likelihood models.
+Concrete subtypes: `PoissonClusterRates`, `PoissonClusterRatesMarg`, `PoissonPopulationRates`
+"""
+abstract type PoissonModel <: LikelihoodModel end
+
+"""
+    BinomialModel <: LikelihoodModel
+
+Abstract type for Binomial likelihood models.
+Concrete subtypes: `BinomialClusterProb`, `BinomialClusterProbMarg`
+"""
+abstract type BinomialModel <: LikelihoodModel end
+
+"""
+    GammaModel <: LikelihoodModel
+
+Abstract type for Gamma likelihood models.
+Concrete subtypes: `GammaClusterShapeMarg`
+"""
+abstract type GammaModel <: LikelihoodModel end
+
+# ============================================================================
+# Abstract Types for State, Priors, and Samples
+# ============================================================================
+
+"""
+    AbstractMCMCState{T<:Real}
+
+Abstract supertype for MCMC state containers.
+Each model variant has its own state type.
+"""
+abstract type AbstractMCMCState{T<:Real} end
+
+"""
+    AbstractPriors
+
+Abstract supertype for prior specifications.
+Allows type-dispatched prior handling and validation.
+"""
+abstract type AbstractPriors end
+
+"""
+    AbstractMCMCSamples
+
+Abstract supertype for MCMC output containers.
+"""
+abstract type AbstractMCMCSamples end
+
+# ============================================================================
+# Birth Proposals for RJMCMC
+# ============================================================================
+
+"""
+    BirthProposal
+
+Abstract supertype for RJMCMC birth proposal distributions.
+Controls how new cluster parameters are proposed when clusters split.
+Proposal objects are passed directly to `mcmc` and carry their own configuration.
+"""
+abstract type BirthProposal end
+
+"""
+    PriorProposal <: BirthProposal
+
+Sample new cluster parameters from the prior distribution.
+"""
+struct PriorProposal <: BirthProposal end
+
+"""
+    ConjugateProposal <: BirthProposal
+
+Marker type indicating the model has conjugate cluster parameters.
+When used, `update_c!` dispatches to Gibbs sampling for assignments
+instead of RJMCMC, and cluster parameters are resampled from their
+conjugate posteriors after assignment updates.
+"""
+struct ConjugateProposal <: BirthProposal end
+
+"""
+    MomentMatchedProposal <: BirthProposal
+
+Abstract supertype for data-informed birth proposals that use
+empirical moments of the moving set to construct the proposal distribution.
+"""
+abstract type MomentMatchedProposal <: BirthProposal end
+
+"""
+    NormalMomentMatch <: MomentMatchedProposal
+
+Sample new cluster parameters from truncated Normal centered at empirical mean.
+
+# Fields
+- `σ::Vector{Float64}`: One proposal std per cluster parameter
+"""
+struct NormalMomentMatch <: MomentMatchedProposal
+    σ::Vector{Float64}
+end
+NormalMomentMatch(σ::Float64) = NormalMomentMatch([σ])
+NormalMomentMatch(σs::Float64...) = NormalMomentMatch(collect(σs))
+
+"""
+    InverseGammaMomentMatch <: MomentMatchedProposal
+
+Fit InverseGamma to data in moving set via method of moments.
+Falls back to prior if moment matching fails.
+
+# Fields
+- `min_size::Int`: Minimum cluster size to attempt moment matching
+"""
+struct InverseGammaMomentMatch <: MomentMatchedProposal
+    min_size::Int
+end
+InverseGammaMomentMatch() = InverseGammaMomentMatch(3)
+
+"""
+    LogNormalMomentMatch <: MomentMatchedProposal
+
+Sample on log-scale using moment-matched LogNormal proposal.
+For each parameter, proposes log(θ) ~ Normal(log(θ_est), σ) where
+θ_est is a moment-based estimate.
+
+# Fields
+- `σ::Vector{Float64}`: One proposal std per cluster parameter (on log-scale)
+- `min_size::Int`: Minimum cluster size for moment estimation
+"""
+struct LogNormalMomentMatch <: MomentMatchedProposal
+    σ::Vector{Float64}
+    min_size::Int
+end
+LogNormalMomentMatch(σ::Float64; min_size::Int=2) = LogNormalMomentMatch([σ], min_size)
+LogNormalMomentMatch(σs::Vector{Float64}; min_size::Int=2) = LogNormalMomentMatch(σs, min_size)
+
+"""
+    FixedDistributionProposal <: BirthProposal
+
+Sample new cluster parameters from user-specified fixed distributions.
+
+# Fields
+- `dists::Vector{UnivariateDistribution}`: One distribution per cluster parameter
+"""
+struct FixedDistributionProposal <: BirthProposal
+    dists::Vector{UnivariateDistribution}
+end
+FixedDistributionProposal(d::UnivariateDistribution) = FixedDistributionProposal([d])
+
+"""
+    MixedProposal{T<:NamedTuple} <: BirthProposal
+
+Compose per-parameter birth proposals. Each cluster parameter can use a different
+proposal strategy. The `proposals` field is a NamedTuple mapping parameter names
+(e.g. `:λ`, `:α`) to individual `BirthProposal` instances.
+
+Dispatches to `sample_birth_param` and `birth_param_logpdf` for each parameter,
+which are implemented per (model, parameter, proposal) combination in each model file.
+
+# Example
+```julia
+MixedProposal(
+    λ = LogNormalMomentMatch(0.5),
+    α = NormalMomentMatch(0.5)
+)
+```
+"""
+struct MixedProposal{T<:NamedTuple} <: BirthProposal
+    proposals::T
+end
+MixedProposal(; kwargs...) = MixedProposal(NamedTuple(kwargs))
+
+# ============================================================================
+# Fixed-Dimension Proposals for RJMCMC
+# ============================================================================
+
+"""
+    FixedDimensionProposal
+
+Abstract supertype for RJMCMC fixed-dimension proposal distributions.
+Controls how cluster parameters are updated when the moving set S_i transfers
+between existing clusters without changing the total number of clusters K.
+"""
+abstract type FixedDimensionProposal end
+
+"""
+    NoUpdate <: FixedDimensionProposal
+
+Keep existing cluster parameters unchanged during fixed-dimension moves.
+The acceptance probability depends solely on the posterior ratio.
+"""
+struct NoUpdate <: FixedDimensionProposal end
+
+"""
+    WeightedMean <: FixedDimensionProposal
+
+Deterministically update parameters as weighted averages of cluster contents.
+For a parameter ρ, the augmented cluster gets a weighted mean incorporating
+the moving set, and the depleted cluster is adjusted accordingly.
+The update is deterministic (lpr = 0) so the Jacobian is unity.
+"""
+struct WeightedMean <: FixedDimensionProposal end
+
+"""
+    Resample{P<:BirthProposal} <: FixedDimensionProposal
+
+Stochastically resample cluster parameters for the modified clusters using
+an inner `BirthProposal`. Reuses `sample_birth_param`/`birth_param_logpdf`
+applied to the new cluster memberships (remaining depleted, augmented).
+The Hastings ratio accounts for the forward and reverse proposal densities.
+
+# Fields
+- `proposal::P`: The birth proposal to use for resampling
+
+# Example
+```julia
+Resample(NormalMomentMatch(0.5, 0.3, 0.5))  # moment-matched resampling
+Resample()                                    # prior-based resampling
+```
+"""
+struct Resample{P<:BirthProposal} <: FixedDimensionProposal
+    proposal::P
+end
+Resample() = Resample(PriorProposal())
+
+"""
+    MixedFixedDim{T<:NamedTuple} <: FixedDimensionProposal
+
+Compose per-parameter fixed-dimension proposals. Each cluster parameter can use
+a different update strategy. The `proposals` field is a NamedTuple mapping
+parameter names to individual `FixedDimensionProposal` instances.
+Unspecified parameters default to `NoUpdate`.
+
+# Example
+```julia
+MixedFixedDim(ξ = WeightedMean(), ω = NoUpdate(), α = NoUpdate())
+```
+"""
+struct MixedFixedDim{T<:NamedTuple} <: FixedDimensionProposal
+    proposals::T
+end
+MixedFixedDim(; kwargs...) = MixedFixedDim(NamedTuple(kwargs))
+
+
+# ============================================================================
+# Observed Data Types
+# ============================================================================
+
+"""
+    AbstractObservedData
+
+Abstract supertype for observed data containers in the DDCRP framework.
+Encapsulates response data (y), distance matrix (D), and optional trials data.
+"""
+abstract type AbstractObservedData end
+
+"""
+    CountData{Ty, Td} <: AbstractObservedData
+
+Observed count data for Poisson and Binomial models.
+
+# Fields
+- `y::Ty`: Observed counts (AbstractVector)
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct CountData{Ty<:AbstractVector, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    D::Td
+end
+
+"""
+    CountDataWithTrials{Ty, Tn, Td} <: AbstractObservedData
+
+Observed count data with number of trials for Binomial models.
+
+# Fields
+- `y::Ty`: Observed successes (AbstractVector)
+- `N::Tn`: Number of trials (scalar Int or AbstractVector{Int})
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct CountDataWithTrials{Ty<:AbstractVector, Tn<:Union{Int, <:AbstractVector{Int}}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    N::Tn
+    D::Td
+end
+
+"""
+    CountDataWithPopulation{Ty, Tp, Td} <: AbstractObservedData
+
+Observed count data with population/exposure offsets for Poisson/NB population models.
+
+# Fields
+- `y::Ty`: Observed counts (AbstractVector)
+- `P::Tp`: Population or exposure (scalar or AbstractVector{<:Real})
+- `D::Td`: Distance matrix (AbstractMatrix)
+- `missing_mask::BitVector`: `true` for indices with missing observations (default: all false)
+"""
+struct CountDataWithPopulation{Ty<:AbstractVector, Tp<:Union{<:Real,<:AbstractVector{<:Real}}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    P::Tp
+    D::Td
+    missing_mask::BitVector
+end
+CountDataWithPopulation(y, P, D) = CountDataWithPopulation(y, P, D, falses(length(y)))
+
+"""
+    ContinuousData{Ty, Td} <: AbstractObservedData
+
+Observed continuous data for continuous-valued models (e.g. Gamma).
+
+# Fields
+- `y::Ty`: Observed values (AbstractVector{<:Real})
+- `D::Td`: Distance matrix (AbstractMatrix)
+"""
+struct ContinuousData{Ty<:AbstractVector{<:Real}, Td<:AbstractMatrix} <: AbstractObservedData
+    y::Ty
+    D::Td
+end
+
+# ============================================================================
+# Observed Data Accessor Functions
+# ============================================================================
+
+"""Return the observations vector."""
+observations(data::AbstractObservedData) = data.y
+
+"""Return the distance matrix."""
+distance_matrix(data::AbstractObservedData) = data.D
+
+"""Return the number of trials (only for CountDataWithTrials)."""
+trials(data::CountDataWithTrials) = data.N
+
+"""Check if data has trials information."""
+has_trials(::AbstractObservedData) = false
+has_trials(::CountDataWithTrials) = true
+
+"""Return the population/exposure vector (only for CountDataWithPopulation)."""
+population(data::CountDataWithPopulation) = data.P
+
+"""Check if data has population/exposure information."""
+has_population(::AbstractObservedData) = false
+has_population(::CountDataWithPopulation) = true
+
+"""Return the missing data mask (BitVector of length n); nothing for other data types."""
+get_missing_mask(data::CountDataWithPopulation) = data.missing_mask
+get_missing_mask(::AbstractObservedData) = nothing
+
+"""Return true if any observations are missing."""
+has_missing(data::CountDataWithPopulation) = any(data.missing_mask)
+has_missing(::AbstractObservedData) = false
+
+"""Number of observations."""
+nobs(data::AbstractObservedData) = length(data.y)
+
+# ============================================================================
+# Model Data Requirement Traits
+# ============================================================================
+
+"""
+    requires_trials(model::LikelihoodModel) -> Bool
+
+Returns true if the model requires data with trials/exposure (N or P).
+"""
+requires_trials(::LikelihoodModel) = false
+requires_trials(::BinomialModel) = true
+
+"""
+    requires_population(model::LikelihoodModel) -> Bool
+
+Returns true if the model requires data with population/exposure offsets (P).
+"""
+requires_population(::LikelihoodModel) = false
+
+
+
+
+ # Types for missing data handling when updating c
+abstract type CustomerUpdate end
+
+struct StandardUpdate <: CustomerUpdate end
+struct MissingUpdate <: CustomerUpdate end
