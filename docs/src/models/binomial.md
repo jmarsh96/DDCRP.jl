@@ -16,6 +16,21 @@ All Binomial models use a conjugate Beta prior on *p_k*, which allows analytical
 
 ---
 
+## BinomialClusterProbMarg
+
+Cluster probabilities *p_k* are integrated out analytically via Beta–Binomial conjugacy. Inference uses conjugate Gibbs sampling. State holds only `c::Vector{Int}`. See the [API Reference](../api.md#Binomial-Models) for full type documentation.
+
+**Example:**
+
+```julia
+data = CountDataWithTrials(y, N, D)
+priors = BinomialClusterProbMargPriors(1.0, 1.0)
+
+samples = mcmc(BinomialClusterProbMarg(), data, ddcrp, priors, ConjugateProposal(); opts=opts)
+```
+
+---
+
 ## BinomialClusterProb
 
 Explicit cluster probabilities *p_k* sampled via RJMCMC. Use this when you need posterior distributions over the cluster success probabilities themselves. State holds a `p_dict::Dict{Vector{Int},Float64}`; priors are `p_a, p_b` for `Beta(p_a, p_b)`. See the [API Reference](../api.md#Binomial-Models) for full type documentation.
@@ -39,20 +54,6 @@ samples, diag = mcmc(
 )
 ```
 
----
-
-## BinomialClusterProbMarg
-
-Cluster probabilities *p_k* are integrated out analytically via Beta–Binomial conjugacy. Inference uses conjugate Gibbs sampling. State holds only `c::Vector{Int}`. See the [API Reference](../api.md#Binomial-Models) for full type documentation.
-
-**Example:**
-
-```julia
-data = CountDataWithTrials(y, N, D)
-priors = BinomialClusterProbMargPriors(1.0, 1.0)
-
-samples = mcmc(BinomialClusterProbMarg(), data, ddcrp, priors, ConjugateProposal(); opts=opts)
-```
 
 ---
 
