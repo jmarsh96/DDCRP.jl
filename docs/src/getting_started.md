@@ -1,21 +1,21 @@
 ```@meta
-CurrentModule = DDCRP
+CurrentModule = DistanceDependentCRP
 ```
 
 # Getting Started
 
 ## Installation
 
-`DDCRP.jl` requires Julia 1.10 or later. Install from the Julia REPL:
+`DistanceDependentCRP.jl` requires Julia 1.10 or later. Install from the Julia REPL:
 
 ```julia
-] add DDCRP
+] add DistanceDependentCRP
 ```
 
 To use the package after installation:
 
 ```julia
-using DDCRP
+using DistanceDependentCRP
 ```
 
 ## Package Structure
@@ -128,7 +128,7 @@ The `fixed_dim_proposal` keyword argument controls parameter updates for fixed-d
 **Marginalised (Gibbs) example:**
 
 ```julia
-using DDCRP, Random
+using DistanceDependentCRP, Random
 Random.seed!(1)
 
 sim  = simulate_poisson_data(60, [2.0, 8.0]; α=0.5, scale=1.0)
@@ -196,7 +196,7 @@ loo  = compute_psis_loo(ll_matrix)
 ## Full End-to-End Example
 
 ```julia
-using DDCRP, Random, Statistics
+using DistanceDependentCRP, Random, Statistics
 
 Random.seed!(42)
 

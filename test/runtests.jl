@@ -3,7 +3,7 @@
 # ============================================================================
 
 using Test
-using DDCRP
+using DistanceDependentCRP
 using Random
 using Statistics
 using Distributions
@@ -15,7 +15,7 @@ Random.seed!(42)
 # Load helper functions (not tests themselves)
 include("test_helpers.jl")
 
-@testset "DDCRP.jl" begin
+@testset "DistanceDependentCRP.jl" begin
     # Run actual test suites in order
     include("test_core.jl")
     include("test_proposals.jl")

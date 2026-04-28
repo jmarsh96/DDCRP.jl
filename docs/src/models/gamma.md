@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = DDCRP
+CurrentModule = DistanceDependentCRP
 ```
 
 # Gamma Models
@@ -21,7 +21,7 @@ The rate *β_k* is integrated out analytically using a conjugate Gamma prior, wh
 **Example:**
 
 ```julia
-using DDCRP, Random
+using DistanceDependentCRP, Random
 Random.seed!(7)
 
 sim = simulate_gamma_data(60, [2.0, 8.0], [1.0, 1.0]; α=0.3, scale=1.5)

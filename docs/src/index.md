@@ -1,10 +1,10 @@
 ```@meta
-CurrentModule = DDCRP
+CurrentModule = DistanceDependentCRP
 ```
 
-# DDCRP.jl
+# DistanceDependentCRP.jl
 
-`DDCRP.jl` is a Julia package for Bayesian nonparametric clustering using the **Distance Dependent Chinese Restaurant Process** (DDCRP).
+`DistanceDependentCRP.jl` is a Julia package for Bayesian nonparametric clustering using the **Distance Dependent Chinese Restaurant Process** (DDCRP).
 
 ## What is the DDCRP?
 

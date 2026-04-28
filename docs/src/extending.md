@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = DDCRP
+CurrentModule = DistanceDependentCRP
 ```
 
 # Adding Your Own Model
@@ -227,7 +227,7 @@ samples, diag = mcmc(
 ## Complete Skeleton
 
 ```julia
-using DDCRP
+using DistanceDependentCRP
 using Distributions, SpecialFunctions
 
 # ── Types ──────────────────────────────────────────────────────────────────────

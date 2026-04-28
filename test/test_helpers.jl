@@ -4,7 +4,7 @@
 #
 # Shared utilities for testing DDCRP.jl functionality
 
-using DDCRP
+using DistanceDependentCRP
 using Statistics
 using Distributions
 

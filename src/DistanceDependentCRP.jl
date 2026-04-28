@@ -3,7 +3,7 @@
 # Bayesian Nonparametric Clustering with Multiple Likelihood Models
 # ============================================================================
 
-module DDCRP
+module DistanceDependentCRP
 
 using Distributions
 using SpecialFunctions
