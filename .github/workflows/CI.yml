@@ -68,6 +68,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using DDCRP
-          DocMeta.setdocmeta!(DDCRP, :DocTestSetup, :(using DDCRP); recursive=true)
-          doctest(DDCRP)
+          using DistanceDependentCRP
+          DocMeta.setdocmeta!(DistanceDependentCRP, :DocTestSetup, :(using DistanceDependentCRP); recursive=true)
+          doctest(DistanceDependentCRP)

@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = DDCRP
+CurrentModule = DistanceDependentCRP
 ```
 
 # Poisson Models

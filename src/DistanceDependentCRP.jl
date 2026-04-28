@@ -1,9 +1,9 @@
 # ============================================================================
-# DDCRP.jl - Distance Dependent Chinese Restaurant Process
+# DistanceDependentCRP.jl - Distance Dependent Chinese Restaurant Process
 # Bayesian Nonparametric Clustering with Multiple Likelihood Models
 # ============================================================================
 
-module DDCRP
+module DistanceDependentCRP
 
 using Distributions
 using SpecialFunctions
