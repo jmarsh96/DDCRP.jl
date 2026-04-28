@@ -118,27 +118,27 @@ end
     @testset "sorted_setdiff" begin
         a = [1, 3, 5, 7, 9]
         b = [3, 7]
-        result = DDCRP.sorted_setdiff(a, b)
+        result = sorted_setdiff(a, b)
         @test result == [1, 5, 9]
 
-        @test DDCRP.sorted_setdiff(a, Int[]) == a
-        @test DDCRP.sorted_setdiff(Int[], b) == Int[]
-        @test DDCRP.sorted_setdiff([1, 2, 3], [4, 5, 6]) == [1, 2, 3]
-        @test DDCRP.sorted_setdiff([1, 2, 3], [1, 2, 3]) == Int[]
+        @test sorted_setdiff(a, Int[]) == a
+        @test sorted_setdiff(Int[], b) == Int[]
+        @test sorted_setdiff([1, 2, 3], [4, 5, 6]) == [1, 2, 3]
+        @test sorted_setdiff([1, 2, 3], [1, 2, 3]) == Int[]
     end
 
     @testset "sorted_merge" begin
         a = [1, 3, 5]
         b = [2, 4, 6]
-        result = DDCRP.sorted_merge(a, b)
+        result = sorted_merge(a, b)
         @test result == [1, 2, 3, 4, 5, 6]
 
-        @test DDCRP.sorted_merge(a, Int[]) == a
-        @test DDCRP.sorted_merge(Int[], b) == b
+        @test sorted_merge(a, Int[]) == a
+        @test sorted_merge(Int[], b) == b
 
         a2 = [1, 5, 9]
         b2 = [2, 5, 7]
-        result2 = DDCRP.sorted_merge(a2, b2)
+        result2 = sorted_merge(a2, b2)
         @test issorted(result2)
         @test length(result2) == length(a2) + length(b2)
     end

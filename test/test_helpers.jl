@@ -2,7 +2,7 @@
 # Test Helper Functions
 # ============================================================================
 #
-# Shared utilities for testing DDCRP.jl functionality
+# Shared utilities for testing jl functionality
 
 using DistanceDependentCRP
 using Statistics
@@ -18,12 +18,12 @@ using Distributions
 Validate that a state object is internally consistent.
 Returns nothing if valid, throws an error otherwise.
 """
-function check_state_consistency(model::DDCRP.LikelihoodModel, state::DDCRP.AbstractMCMCState, data::DDCRP.AbstractObservedData)
+function check_state_consistency(model::LikelihoodModel, state::AbstractMCMCState, data::AbstractObservedData)
     n = length(state.c)
-    dicts = DDCRP.cluster_param_dicts(state)
+    dicts = cluster_param_dicts(state)
 
     # Check all observations are covered
-    tables = DDCRP.table_vector(state.c)
+    tables = table_vector(state.c)
     all_obs = sort(vcat(tables...))
     @assert all_obs == 1:n "All observations must be in some table"
 
@@ -50,13 +50,13 @@ end
 
 Check model-specific parameter constraints (dispatch on model type).
 """
-function check_parameter_constraints(::DDCRP.LikelihoodModel, ::DDCRP.AbstractMCMCState)
+function check_parameter_constraints(::LikelihoodModel, ::AbstractMCMCState)
     # Default: no specific constraints
     return true
 end
 
 # Poisson: λ > 0
-function check_parameter_constraints(::DDCRP.PoissonModel, state::DDCRP.AbstractMCMCState)
+function check_parameter_constraints(::PoissonModel, state::AbstractMCMCState)
     if hasproperty(state, :λ_dict)
         for λ in values(state.λ_dict)
             @assert λ > 0 "Cluster rates must be positive"
@@ -70,7 +70,7 @@ function check_parameter_constraints(::DDCRP.PoissonModel, state::DDCRP.Abstract
 end
 
 # Binomial: 0 < p < 1
-function check_parameter_constraints(::DDCRP.BinomialModel, state::DDCRP.AbstractMCMCState)
+function check_parameter_constraints(::BinomialModel, state::AbstractMCMCState)
     if hasproperty(state, :p_dict)
         for p in values(state.p_dict)
             @assert 0 < p < 1 "Cluster probabilities must be in (0, 1)"
@@ -79,7 +79,7 @@ function check_parameter_constraints(::DDCRP.BinomialModel, state::DDCRP.Abstrac
 end
 
 # Gamma: α > 0
-function check_parameter_constraints(::DDCRP.GammaModel, state::DDCRP.AbstractMCMCState)
+function check_parameter_constraints(::GammaModel, state::AbstractMCMCState)
     if hasproperty(state, :α_dict)
         for α in values(state.α_dict)
             @assert α > 0 "Gamma shape parameters must be positive"
@@ -97,22 +97,22 @@ end
 Verify that posterior calculation is correct by checking components.
 Returns nothing if valid, throws an error otherwise.
 """
-function check_posterior_components(model::DDCRP.LikelihoodModel, state::DDCRP.AbstractMCMCState,
-                                     data::DDCRP.AbstractObservedData, priors::DDCRP.AbstractPriors,
+function check_posterior_components(model::LikelihoodModel, state::AbstractMCMCState,
+                                     data::AbstractObservedData, priors::AbstractPriors,
                                      log_DDCRP::AbstractMatrix)
     # Compute full posterior
-    full_post = DDCRP.posterior(model, data, state, priors, log_DDCRP)
+    full_post = posterior(model, data, state, priors, log_DDCRP)
     @assert isfinite(full_post) "Posterior must be finite"
 
     # Compute components separately
-    dicts = DDCRP.cluster_param_dicts(state)
+    dicts = cluster_param_dicts(state)
     primary_dict = first(dicts)
 
-    table_sum = sum(DDCRP.table_contribution(model, table, state, data, priors)
+    table_sum = sum(table_contribution(model, table, state, data, priors)
                     for table in keys(primary_dict))
     @assert isfinite(table_sum) "Sum of table contributions must be finite"
 
-    ddcrp_contrib = DDCRP.ddcrp_contribution(state.c, log_DDCRP)
+    ddcrp_contrib = ddcrp_contribution(state.c, log_DDCRP)
     @assert isfinite(ddcrp_contrib) "DDCRP contribution must be finite"
 
     # Check they match
@@ -161,7 +161,7 @@ Returns a NamedTuple with ARI statistics.
 function test_cluster_recovery(c_samples::AbstractMatrix{Int}, c_true::AbstractVector{Int};
                                 min_ari::Real=0.5)
     # Compute ARI trace
-    ari_trace = DDCRP.compute_ari_trace(c_samples, c_true)
+    ari_trace = compute_ari_trace(c_samples, c_true)
 
     # Remove burnin
     n_samples = size(c_samples, 1)
@@ -185,9 +185,9 @@ end
 Validate that MCMC acceptance rates are in a reasonable range.
 Returns the acceptance rates NamedTuple.
 """
-function check_acceptance_rates(diag::DDCRP.MCMCDiagnostics;
+function check_acceptance_rates(diag::MCMCDiagnostics;
                                   min_rate::Real=0.05, max_rate::Real=0.70)
-    rates = DDCRP.acceptance_rates(diag)
+    rates = acceptance_rates(diag)
 
     # Overall rate should be in reasonable range (unless no moves)
     if !isnan(rates.overall)
@@ -212,7 +212,7 @@ Returns the autocorrelation function.
 """
 function check_mixing(samples::AbstractVector; max_lag::Int=50, target_acf::Real=0.3)
     # Compute autocorrelation
-    acf = DDCRP.autocorrelation(samples, max_lag)
+    acf = autocorrelation(samples, max_lag)
 
     # Check that autocorrelation is approximately 1 at lag 0
     @assert abs(acf[1] - 1.0) < 1e-6 "ACF at lag 0 should be 1"
@@ -254,7 +254,7 @@ end
 
 Create data where all observations belong to one cluster.
 """
-function create_single_cluster_data(::Type{<:DDCRP.BinomialModel}, n::Int)
+function create_single_cluster_data(::Type{<:BinomialModel}, n::Int)
     c = collect(1:n)
     c[2:end] .= 1
     D = zeros(n, n)
@@ -263,7 +263,7 @@ function create_single_cluster_data(::Type{<:DDCRP.BinomialModel}, n::Int)
     return (c=c, D=D, y=y, N=N)
 end
 
-function create_single_cluster_data(::Type{<:DDCRP.GammaModel}, n::Int)
+function create_single_cluster_data(::Type{<:GammaModel}, n::Int)
     c = collect(1:n)
     c[2:end] .= 1
     D = zeros(n, n)
@@ -276,7 +276,7 @@ end
 
 Create data where each observation is its own cluster.
 """
-function create_all_singletons_data(::Type{<:DDCRP.GammaModel}, n::Int)
+function create_all_singletons_data(::Type{<:GammaModel}, n::Int)
     c = collect(1:n)
     D = ones(n, n) * 100
     for i in 1:n
