@@ -7,6 +7,7 @@ makedocs(;
     modules=[DDCRP],
     authors="Joseph Marsh <joe.s.marsh@gmail.com> and contributors",
     sitename="DDCRP.jl",
+    warnonly = [:missing_docs],
     format=Documenter.HTML(;
         canonical="https://jmarsh96.github.io/DDCRP.jl",
         edit_link="main",
@@ -14,6 +15,14 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Getting Started" => "getting_started.md",
+        "Models" => [
+            "Poisson" => "models/poisson.md",
+            "Binomial" => "models/binomial.md",
+            "Gamma" => "models/gamma.md",
+        ],
+        "Adding Your Own Model" => "extending.md",
+        "API Reference" => "api.md",
     ],
 )
 
