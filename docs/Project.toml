@@ -1,3 +1,6 @@
 [deps]
 DistanceDependentCRP = "de57f43c-cd6e-4458-91da-1920171fba1c"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+[compat]
+DistanceDependentCRP = "1.0.0"
